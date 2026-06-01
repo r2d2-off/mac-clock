@@ -88,7 +88,7 @@ private struct UpdateRequest: Codable {
     let downloadURL: String
 }
 
-private struct UpdateResult: Decodable {
+private struct UpdateResult: Codable {
     let generatedAt: String
     let version: String
     let status: String
@@ -116,6 +116,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateState: UpdateState = .idle
     private var lastUpdateCheck = Date.distantPast
     private var updateCheckInFlight = false
+    private var lastUpdateResultSignature: String?
+    private var latestUpdateResult: UpdateResult?
+    private var updateProgressWindow: NSWindow?
+    private weak var updateProgressTitle: NSTextField?
+    private weak var updateProgressLabel: NSTextField?
+    private weak var updateProgressIndicator: NSProgressIndicator?
 
     private lazy var timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -192,6 +198,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func timerFired() {
+        loadUpdateResult(showRecentWindow: true)
+
         if Date().timeIntervalSince(lastStatusRead) >= 5 {
             loadStatus()
             buildMenu()
@@ -240,9 +248,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(request).write(to: updateRequestURL, options: .atomic)
+            try? writeLocalUpdateResult(
+                version: candidate.version,
+                status: "queued",
+                message: "Queued update \(candidate.version)"
+            )
             updateState = .requested(candidate.version)
+            showUpdateProgressWindow(
+                version: candidate.version,
+                message: "Queued update \(candidate.version)",
+                isError: false,
+                isActive: true
+            )
+            updateStatusTitle()
         } catch {
             updateState = .failed("Failed to request update: \(error.localizedDescription)")
+            showUpdateProgressWindow(
+                version: "Update",
+                message: "Failed to request update: \(error.localizedDescription)",
+                isError: true,
+                isActive: false
+            )
         }
 
         buildMenu()
@@ -271,20 +297,155 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadPendingUpdateState() {
+        let hasPendingRequest: Bool
         if FileManager.default.fileExists(atPath: updateRequestURL.path),
            let data = try? Data(contentsOf: updateRequestURL),
            let request = try? JSONDecoder().decode(UpdateRequest.self, from: data) {
             updateState = .requested(request.version)
-            return
+            hasPendingRequest = true
+        } else {
+            hasPendingRequest = false
         }
 
+        loadUpdateResult(showRecentWindow: true)
+
+        if hasPendingRequest, case .upToDate = updateState {
+            updateState = .requested(latestUpdateResult?.version ?? "update")
+        }
+    }
+
+    private func loadUpdateResult(showRecentWindow: Bool) {
         guard let data = try? Data(contentsOf: updateResultURL),
-              let result = try? JSONDecoder().decode(UpdateResult.self, from: data),
-              result.status == "failed" else {
+              let result = try? JSONDecoder().decode(UpdateResult.self, from: data) else {
             return
         }
 
-        updateState = .failed("Update \(result.version) failed: \(result.message)")
+        let signature = [result.generatedAt, result.version, result.status, result.message].joined(separator: "|")
+        guard signature != lastUpdateResultSignature else {
+            return
+        }
+
+        lastUpdateResultSignature = signature
+        latestUpdateResult = result
+        applyUpdateResult(result, showWindow: showRecentWindow && isRecentUpdateResult(result))
+        buildMenu()
+        updateStatusTitle()
+    }
+
+    private func applyUpdateResult(_ result: UpdateResult, showWindow: Bool) {
+        switch result.status {
+        case "queued", "validating", "downloading", "unpacking", "installing", "restarting":
+            updateState = .requested(result.version)
+            if showWindow {
+                showUpdateProgressWindow(version: result.version, message: result.message, isError: false, isActive: true)
+            }
+        case "installed":
+            updateState = .upToDate(result.version)
+            if showWindow {
+                showUpdateProgressWindow(version: result.version, message: result.message, isError: false, isActive: false)
+                closeUpdateProgressWindow(after: 2.5)
+            }
+        case "failed":
+            updateState = .failed("Update \(result.version) failed: \(result.message)")
+            if showWindow {
+                showUpdateProgressWindow(version: result.version, message: result.message, isError: true, isActive: false)
+            }
+        default:
+            break
+        }
+    }
+
+    private func writeLocalUpdateResult(version: String, status: String, message: String) throws {
+        let result = UpdateResult(generatedAt: timestamp(), version: version, status: status, message: message)
+        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(result).write(to: updateResultURL, options: .atomic)
+        latestUpdateResult = result
+        lastUpdateResultSignature = [result.generatedAt, result.version, result.status, result.message].joined(separator: "|")
+    }
+
+    private func isRecentUpdateResult(_ result: UpdateResult) -> Bool {
+        guard let date = ISO8601DateFormatter().date(from: result.generatedAt) else {
+            return false
+        }
+
+        return abs(date.timeIntervalSinceNow) <= 600
+    }
+
+    private func showUpdateProgressWindow(version: String, message: String, isError: Bool, isActive: Bool) {
+        let window: NSWindow
+        if let existingWindow = updateProgressWindow {
+            window = existingWindow
+        } else {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 390, height: 128),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = "IP Time Update"
+            panel.isReleasedWhenClosed = false
+            panel.level = .floating
+
+            let content = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 128))
+
+            let title = NSTextField(labelWithString: isActive ? "Installing \(version)" : "Update \(version)")
+            title.frame = NSRect(x: 22, y: 82, width: 346, height: 24)
+            title.font = .systemFont(ofSize: 15, weight: .semibold)
+
+            let label = NSTextField(labelWithString: message)
+            label.frame = NSRect(x: 22, y: 52, width: 346, height: 22)
+            label.font = .systemFont(ofSize: 13, weight: .regular)
+            label.lineBreakMode = .byTruncatingMiddle
+
+            let progress = NSProgressIndicator(frame: NSRect(x: 22, y: 24, width: 346, height: 12))
+            progress.style = .bar
+            progress.isIndeterminate = true
+
+            content.addSubview(title)
+            content.addSubview(label)
+            content.addSubview(progress)
+            panel.contentView = content
+
+            updateProgressLabel = label
+            updateProgressTitle = title
+            updateProgressIndicator = progress
+            updateProgressWindow = panel
+            window = panel
+        }
+
+        updateProgressWindow?.title = "IP Time Update"
+        updateProgressTitle?.stringValue = isActive ? "Installing \(version)" : "Update \(version)"
+        updateProgressLabel?.stringValue = message
+        updateProgressLabel?.textColor = isError ? .systemRed : .labelColor
+
+        if isActive {
+            updateProgressIndicator?.isHidden = false
+            updateProgressIndicator?.startAnimation(nil)
+        } else {
+            updateProgressIndicator?.stopAnimation(nil)
+            updateProgressIndicator?.isHidden = true
+        }
+
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func closeUpdateProgressWindow(after delay: TimeInterval) {
+        guard let window = updateProgressWindow else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
+            guard let self, let window, self.updateProgressWindow === window else {
+                return
+            }
+
+            window.close()
+            self.updateProgressWindow = nil
+        }
     }
 
     private func buildMenu() {
@@ -437,7 +598,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         case .available(let candidate):
             rows.append("Updates: \(candidate.version) available")
         case .requested(let version):
-            rows.append("Updates: installing \(version)")
+            rows.append("Updates: \(latestUpdateResult?.message ?? "installing \(version)")")
         case .failed(let message):
             rows.append("Updates: \(message)")
         case .checking:
@@ -451,6 +612,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkForUpdates(silent: Bool) async {
         guard !updateCheckInFlight else {
+            return
+        }
+
+        if case .requested = updateState {
             return
         }
 
@@ -534,10 +699,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let localText = formattedTime(now, in: .autoupdatingCurrent)
         let moscowText = formattedTime(now, in: moscowTimeZone)
         let moscowDate = dateFormatter.string(from: now)
-        let segments = [
+        var segments = [
             StatusSegment(flag: "🇷🇺", primary: moscowText, detail: moscowDate, detailFirst: true, isError: false),
             StatusSegment(flag: flag(for: countryCode), primary: localText, detail: ipLabel, detailFirst: false, isError: displayedError != nil)
         ]
+
+        if case .requested(let version) = updateState {
+            segments[1] = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
+        }
 
         return StatusDisplay(
             segments: segments,

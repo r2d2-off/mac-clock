@@ -3,7 +3,7 @@
 macOS menu bar clock for VPN work:
 
 ```text
-[🇷🇺 Mon Jun 1 19:07  |  🇩🇪 18:07  203.0.113.42]
+[🇷🇺 Mon Jun 1 19:07    🇳🇱 18:07  203.0.113.42]
 ```
 
 The first segment is always Moscow time (`Europe/Moscow`). The second segment
@@ -17,8 +17,9 @@ menu.
 
 The menu bar app can also check GitHub Releases for updates. When an update is
 available, choose `Install Update ...` from the menu. The app writes an update
-request, and the root LaunchDaemon downloads the release zip and replaces the
-installed app and daemon without another installer prompt.
+request and shows update progress while the root LaunchDaemon downloads the
+release zip and replaces the installed app and daemon without another installer
+prompt.
 
 ## Install From Source
 
@@ -116,9 +117,8 @@ To remove status and user config too:
 
 ## IP And Locale Rules
 
-The daemon uses `https://ipinfo.io/json?token=9497053025bca2` as the main API.
-If that fails, it falls back to `https://api.ipinfo.io/lite/me?token=9497053025bca2`
-and maps supported country codes to default timezones.
+The daemon uses `http://ip-api.com/json` for external IP, country code, city,
+region, and timezone detection.
 
 Supported regional mappings:
 

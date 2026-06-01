@@ -1,41 +1,48 @@
 import Foundation
 
-private let ipInfoURL = URL(string: "https://ipinfo.io/json?token=9497053025bca2")!
-private let ipInfoLiteURL = URL(string: "https://api.ipinfo.io/lite/me?token=9497053025bca2")!
+private let ipAPIURL = URL(string: "http://ip-api.com/json")!
 private let defaultStatusPath = "/Library/Application Support/IPTime/status.json"
 private let statusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["IPTIME_STATUS_PATH"] ?? defaultStatusPath)
 private let supportDirectoryURL = statusURL.deletingLastPathComponent()
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let regionCheckInterval: TimeInterval = 600
-private let updatePollIntervalNanoseconds: UInt64 = 5_000_000_000
+private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
 private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
 
 private struct IPInfoResponse: Decodable {
+    let status: String?
+    let message: String?
     let ip: String?
     let city: String?
     let region: String?
     let country: String?
+    let countryName: String?
     let timezone: String?
 
-    init(ip: String?, city: String?, region: String?, country: String?, timezone: String?) {
-        self.ip = ip
-        self.city = city
-        self.region = region
-        self.country = country
-        self.timezone = timezone
-    }
-}
-
-private struct IPInfoLiteResponse: Decodable {
-    let ip: String?
-    let countryCode: String?
-    let country: String?
-
     private enum CodingKeys: String, CodingKey {
-        case ip
-        case countryCode = "country_code"
+        case status
+        case message
+        case ip = "query"
+        case city
+        case region
+        case regionName
         case country
+        case countryCode
+        case timezone
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        ip = try container.decodeIfPresent(String.self, forKey: .ip)
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        region = try container.decodeIfPresent(String.self, forKey: .regionName)
+            ?? container.decodeIfPresent(String.self, forKey: .region)
+        country = try container.decodeIfPresent(String.self, forKey: .countryCode)
+        countryName = try container.decodeIfPresent(String.self, forKey: .country)
+        timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
     }
 }
 
@@ -74,18 +81,6 @@ private let regionRules: [String: RegionRule] = [
     "RU": RegionRule(locale: "ru_RU", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
     "SG": RegionRule(locale: "en_SG", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
     "CN": RegionRule(locale: "zh_CN", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1)
-]
-
-private let defaultTimeZonesByCountry: [String: String] = [
-    "PL": "Europe/Warsaw",
-    "AE": "Asia/Dubai",
-    "DE": "Europe/Berlin",
-    "NL": "Europe/Amsterdam",
-    "FR": "Europe/Paris",
-    "US": "America/New_York",
-    "RU": "Europe/Moscow",
-    "SG": "Asia/Singapore",
-    "CN": "Asia/Shanghai"
 ]
 
 private struct ActiveUser {
@@ -175,9 +170,17 @@ private final class Runner {
             updateInProgress = false
         }
 
+        var requestedVersion = "unknown"
         do {
             let data = try Data(contentsOf: requestURL)
             let request = try JSONDecoder().decode(UpdateRequest.self, from: data)
+            requestedVersion = request.version
+            writeUpdateResult(
+                activeUser: activeUser,
+                version: request.version,
+                status: "validating",
+                message: "Validating update \(request.version)"
+            )
             try validateUpdateRequest(request)
             try await installUpdate(request, activeUser: activeUser)
             try? FileManager.default.removeItem(at: requestURL)
@@ -192,7 +195,7 @@ private final class Runner {
             try? FileManager.default.removeItem(at: requestURL)
             writeUpdateResult(
                 activeUser: activeUser,
-                version: "unknown",
+                version: requestedVersion,
                 status: "failed",
                 message: error.localizedDescription
             )
@@ -234,7 +237,19 @@ private final class Runner {
             try? FileManager.default.removeItem(at: workDirectory)
         }
 
+        writeUpdateResult(
+            activeUser: activeUser,
+            version: request.version,
+            status: "downloading",
+            message: "Downloading update \(request.version)"
+        )
         try await downloadUpdate(from: request.downloadURL, to: archiveURL, activeUser: activeUser)
+        writeUpdateResult(
+            activeUser: activeUser,
+            version: request.version,
+            status: "unpacking",
+            message: "Unpacking update \(request.version)"
+        )
         try FileManager.default.createDirectory(at: unpackedURL, withIntermediateDirectories: true)
         try runOrThrow(path: "/usr/bin/ditto", arguments: ["-x", "-k", archiveURL.path, unpackedURL.path])
 
@@ -246,6 +261,12 @@ private final class Runner {
             throw IPTimeError("Update archive does not contain iptime-daemon")
         }
 
+        writeUpdateResult(
+            activeUser: activeUser,
+            version: request.version,
+            status: "installing",
+            message: "Installing update \(request.version)"
+        )
         _ = runProcess(path: "/usr/bin/killall", arguments: ["DualTimeMenuBar"])
 
         try FileManager.default.createDirectory(at: URL(fileURLWithPath: "/usr/local/libexec", isDirectory: true), withIntermediateDirectories: true)
@@ -262,16 +283,22 @@ private final class Runner {
         try runOrThrow(path: "/usr/sbin/chown", arguments: ["root:wheel", plistURL.path])
         try runOrThrow(path: "/bin/chmod", arguments: ["644", plistURL.path])
 
+        writeUpdateResult(
+            activeUser: activeUser,
+            version: request.version,
+            status: "restarting",
+            message: "Restarting IP Time"
+        )
         _ = runAsUser(activeUser, arguments: ["open", appDestinationURL.path])
     }
 
     private func apply(info: IPInfoResponse, activeUser: ActiveUser?) -> ApplyResult {
         guard let timeZone = normalized(info.timezone) else {
-            return ApplyResult(locale: nil, rule: nil, error: "ipinfo.io did not return a timezone")
+            return ApplyResult(locale: nil, rule: nil, error: "ip-api.com did not return a timezone")
         }
 
         guard TimeZone(identifier: timeZone) != nil else {
-            return ApplyResult(locale: nil, rule: nil, error: "Invalid timezone from ipinfo.io: \(timeZone)")
+            return ApplyResult(locale: nil, rule: nil, error: "Invalid timezone from ip-api.com: \(timeZone)")
         }
 
         let country = normalized(info.country)?.uppercased() ?? "?"
@@ -334,7 +361,7 @@ private final class Runner {
             city: normalized(info?.city),
             region: normalized(info?.region),
             countryCode: countryCode,
-            country: countryName(for: countryCode, fallback: normalized(info?.region)),
+            country: countryName(for: countryCode, fallback: normalized(info?.countryName) ?? normalized(info?.region)),
             timeZone: normalized(info?.timezone),
             locale: locale,
             measurementUnits: rule?.measurementUnits,
@@ -357,20 +384,12 @@ private final class Runner {
 }
 
 private func fetchIPInfo() async throws -> IPInfoResponse {
-    do {
-        return try await fetchDecodable(IPInfoResponse.self, from: ipInfoURL)
-    } catch {
-        let fullError = error.localizedDescription
-
-        do {
-            let lite = try await fetchDecodable(IPInfoLiteResponse.self, from: ipInfoLiteURL)
-            let country = lite.countryCode?.uppercased()
-            let timezone = country.flatMap { defaultTimeZonesByCountry[$0] }
-            return IPInfoResponse(ip: lite.ip, city: nil, region: lite.country, country: country, timezone: timezone)
-        } catch {
-            throw IPTimeError("full ipinfo failed: \(fullError); lite fallback failed: \(error.localizedDescription)")
-        }
+    let response = try await fetchDecodable(IPInfoResponse.self, from: ipAPIURL)
+    if response.status == "fail" {
+        throw IPTimeError("ip-api.com lookup failed: \(response.message ?? "unknown error")")
     }
+
+    return response
 }
 
 private func fetchDecodable<T: Decodable>(_ type: T.Type, from url: URL) async throws -> T {
@@ -381,7 +400,7 @@ private func fetchDecodable<T: Decodable>(_ type: T.Type, from url: URL) async t
     let (data, response) = try await URLSession.shared.data(for: request)
 
     if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
-        throw IPTimeError("ipinfo.io returned HTTP \(httpResponse.statusCode)")
+        throw IPTimeError("ip-api.com returned HTTP \(httpResponse.statusCode)")
     }
 
     return try JSONDecoder().decode(type, from: data)
@@ -581,6 +600,10 @@ private func countryName(for code: String?, fallback: String?) -> String? {
         return "United States"
     case "RU":
         return "Russia"
+    case "SG":
+        return "Singapore"
+    case "CN":
+        return "China"
     default:
         return fallback
     }

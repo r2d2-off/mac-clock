@@ -1565,12 +1565,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = Date()
         let homeClock = resolvedHomeClock()
         let homeText = formattedTime(now, in: homeClock.timeZone)
+        let homeDate = formattedDate(now, in: homeClock.timeZone)
 
         if !regionalChangesAllowed {
             let homeSegment = StatusSegment(
                 flag: homeClock.symbol,
                 primary: homeText,
-                detail: nil,
+                detail: homeDate,
                 detailFirst: true,
                 isError: false
             )
@@ -1603,7 +1604,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let localText = formattedTime(now, in: .autoupdatingCurrent)
-        let homeDate = formattedDate(now, in: homeClock.timeZone)
         var segments = [
             StatusSegment(flag: homeClock.symbol, primary: homeText, detail: homeDate, detailFirst: true, isError: false),
             StatusSegment(

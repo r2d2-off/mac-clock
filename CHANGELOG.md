@@ -5,6 +5,11 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.39 - 2026-06-02
+
+- Restores the Home Clock weekday/date display while no regional changes are
+  allowed.
+
 ## v0.1.38 - 2026-06-02
 
 - Keeps the Home Clock visible in the menu bar even when no regional changes are

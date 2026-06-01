@@ -5,6 +5,8 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.34 - 2026-06-02
+
 - Added one-time backups for the original system timezone and active-user
   regional preferences before the daemon applies regional changes.
 - Added `Settings -> Automatic Region Sync`; turning it off restores saved

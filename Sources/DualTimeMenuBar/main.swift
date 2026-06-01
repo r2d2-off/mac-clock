@@ -197,6 +197,7 @@ private let homeClockPresetOptions = [
     HomeClockOption(id: "tz:Asia/Dubai", menuTitle: "Dubai", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Dubai", countryCode: "AE", timeZoneIdentifier: "Asia/Dubai", offsetMinutes: nil)),
     HomeClockOption(id: "tz:Asia/Shanghai", menuTitle: "Shanghai", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Shanghai", countryCode: "CN", timeZoneIdentifier: "Asia/Shanghai", offsetMinutes: nil)),
     HomeClockOption(id: "tz:Asia/Singapore", menuTitle: "Singapore", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Singapore", countryCode: "SG", timeZoneIdentifier: "Asia/Singapore", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Asia/Bangkok", menuTitle: "Bangkok", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Bangkok", countryCode: "TH", timeZoneIdentifier: "Asia/Bangkok", offsetMinutes: nil)),
     HomeClockOption(id: "tz:Europe/Berlin", menuTitle: "Berlin", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Berlin", countryCode: "DE", timeZoneIdentifier: "Europe/Berlin", offsetMinutes: nil)),
     HomeClockOption(id: "tz:Europe/Amsterdam", menuTitle: "Amsterdam", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Amsterdam", countryCode: "NL", timeZoneIdentifier: "Europe/Amsterdam", offsetMinutes: nil)),
     HomeClockOption(id: "tz:Europe/Paris", menuTitle: "Paris", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Paris", countryCode: "FR", timeZoneIdentifier: "Europe/Paris", offsetMinutes: nil)),
@@ -1645,7 +1646,7 @@ private final class StatusBarView: NSView {
 
         if segment.activity.isVisible {
             x += activityIndicatorGap
-            drawActivityIndicator(segment.activity, atX: x, centerY: rect.midY, color: segment.isError ? .systemRed : .controlAccentColor)
+            drawActivityIndicator(segment.activity, atX: x, centerY: rect.midY, color: segment.isError ? .systemRed : .secondaryLabelColor)
         }
     }
 

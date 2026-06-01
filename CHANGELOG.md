@@ -3,6 +3,12 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.30 - 2026-06-01
+
+- Added Bangkok (`Asia/Bangkok`, Thailand) to `Settings -> Home Clock -> Presets`.
+- Changed the IP check comet indicator from the accent color to the same muted
+  color as the IP address text.
+
 ## v0.1.29 - 2026-06-01
 
 - Replaced the IP check pulsing dot with a smoother comet-tail activity

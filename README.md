@@ -20,9 +20,12 @@ Network-triggered checks are debounced for 5 seconds and run at most once every
 delays the recheck instead of dropping it.
 
 Use `Recheck IP Now` from the menu to force an immediate check after connecting
-a VPN manually. Use `Settings -> IP Check Interval` to choose the regular
-background interval: 1, 5, 10, 15, 30, or 60 minutes. The daemon reads interval
-changes live.
+a VPN manually. While the request is waiting for the root daemon result, the
+menu bar switches to an animated `Checking IP` state and the menu item is
+temporarily disabled to avoid duplicate requests.
+
+Use `Settings -> IP Check Interval` to choose the regular background interval:
+1, 5, 10, 15, 30, or 60 minutes. The daemon reads interval changes live.
 
 If something fails, the VPN/IP segment turns red and the error is shown in the
 menu.

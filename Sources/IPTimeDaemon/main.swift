@@ -865,6 +865,7 @@ private func normalized(_ value: String?) -> String? {
 private func timestamp() -> String {
     let formatter = ISO8601DateFormatter()
     formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.string(from: Date())
 }
 

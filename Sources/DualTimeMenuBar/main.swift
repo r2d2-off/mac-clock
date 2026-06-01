@@ -20,6 +20,11 @@ private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
 private let defaultRegionCheckIntervalSeconds = 600
 private let regionCheckIntervalOptions = [60, 300, 600, 900, 1_800, 3_600]
+private let statusRefreshInterval: TimeInterval = 5
+private let activeRecheckStatusRefreshInterval: TimeInterval = 1
+private let uiRefreshInterval: TimeInterval = 0.25
+private let manualRecheckTimeout: TimeInterval = 120
+private let recheckSpinnerFrames = ["◐", "◓", "◑", "◒"]
 
 private struct StatusSegment {
     let flag: String
@@ -172,6 +177,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         ensureLaunchAgent()
         loadConfig()
+        loadPendingManualRecheckState()
 
         let statusView = StatusBarView()
         statusView.toolTip = "IP time / Moscow time"
@@ -190,7 +196,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
         updateStatusTitle()
 
-        timer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        timer = Timer.scheduledTimer(timeInterval: uiRefreshInterval, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
 
         Task { [weak self] in
             await self?.checkForUpdates(silent: true)
@@ -268,8 +274,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func timerFired() {
         loadUpdateResult(showRecentWindow: true)
+        expireManualRecheckIfNeeded()
 
-        if Date().timeIntervalSince(lastStatusRead) >= 5 {
+        let refreshInterval = isManualRecheckInProgress ? activeRecheckStatusRefreshInterval : statusRefreshInterval
+        if Date().timeIntervalSince(lastStatusRead) >= refreshInterval {
             loadStatus()
             buildMenu()
         }
@@ -298,12 +306,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func recheckIPNow() {
         do {
             try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
-            let request = RecheckRequest(requestedAt: timestamp())
+            let requestedAt = Date()
+            let request = RecheckRequest(requestedAt: timestamp(requestedAt))
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(request).write(to: recheckRequestURL, options: .atomic)
-            manualRecheckRequestedAt = Date()
+            manualRecheckRequestedAt = requestedAt
             manualRecheckError = nil
+            updateStatusTitle()
         } catch {
             manualRecheckError = "Failed to request IP recheck: \(error.localizedDescription)"
         }
@@ -413,6 +423,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         config = IPTimeConfig(regionCheckIntervalSeconds: normalizedRegionCheckInterval(decoded.regionCheckIntervalSeconds))
     }
 
+    private func loadPendingManualRecheckState() {
+        guard FileManager.default.fileExists(atPath: recheckRequestURL.path),
+              let data = try? Data(contentsOf: recheckRequestURL),
+              let request = try? JSONDecoder().decode(RecheckRequest.self, from: data),
+              let requestedAt = parseTimestamp(request.requestedAt) else {
+            return
+        }
+
+        manualRecheckRequestedAt = requestedAt
+    }
+
     private func writeConfig() throws {
         try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
@@ -427,12 +448,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func clearManualRecheckIfCompleted() {
         guard let manualRecheckRequestedAt,
               let generatedAt = nonEmpty(status?.generatedAt),
-              let statusDate = ISO8601DateFormatter().date(from: generatedAt),
+              let statusDate = parseTimestamp(generatedAt),
               statusDate >= manualRecheckRequestedAt else {
             return
         }
 
         self.manualRecheckRequestedAt = nil
+    }
+
+    private func expireManualRecheckIfNeeded() {
+        guard let manualRecheckRequestedAt,
+              Date().timeIntervalSince(manualRecheckRequestedAt) > manualRecheckTimeout else {
+            return
+        }
+
+        self.manualRecheckRequestedAt = nil
+        manualRecheckError = "Timed out waiting for daemon response"
+        buildMenu()
     }
 
     private func loadPendingUpdateState() {
@@ -505,7 +537,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isRecentUpdateResult(_ result: UpdateResult) -> Bool {
-        guard let date = ISO8601DateFormatter().date(from: result.generatedAt) else {
+        guard let date = parseTimestamp(result.generatedAt) else {
             return false
         }
 
@@ -618,8 +650,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let recheck = NSMenuItem(title: "Recheck IP Now", action: #selector(recheckIPNow), keyEquivalent: "")
+        let recheck = NSMenuItem(
+            title: isManualRecheckInProgress ? "Rechecking IP \(recheckSpinnerFrame())..." : "Recheck IP Now",
+            action: isManualRecheckInProgress ? nil : #selector(recheckIPNow),
+            keyEquivalent: ""
+        )
         recheck.target = self
+        recheck.isEnabled = !isManualRecheckInProgress
         menu.addItem(recheck)
 
         let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
@@ -760,7 +797,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let manualRecheckRequestedAt {
-            rows.append("Manual recheck: requested at \(shortTime(manualRecheckRequestedAt))")
+            rows.append("Manual recheck: in progress since \(shortTime(manualRecheckRequestedAt))")
         }
 
         if let manualRecheckError {
@@ -924,6 +961,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             StatusSegment(flag: flag(for: countryCode), primary: localText, detail: ipLabel, detailFirst: false, isError: displayedError != nil)
         ]
 
+        if isManualRecheckInProgress {
+            segments[1] = StatusSegment(flag: recheckSpinnerFrame(), primary: "Checking IP", detail: ipLabel, detailFirst: false, isError: false)
+        }
+
         if case .requested(let version) = updateState {
             segments[1] = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
         }
@@ -942,6 +983,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func shortTime(_ date: Date) -> String {
         formattedTime(date, in: .autoupdatingCurrent)
+    }
+
+    private var isManualRecheckInProgress: Bool {
+        manualRecheckRequestedAt != nil
+    }
+
+    private func recheckSpinnerFrame() -> String {
+        let frameIndex = Int((Date().timeIntervalSinceReferenceDate / uiRefreshInterval).rounded(.down)) % recheckSpinnerFrames.count
+        return recheckSpinnerFrames[frameIndex]
     }
 
     private func intervalLabel(_ seconds: Int) -> String {
@@ -1046,10 +1096,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-private func timestamp() -> String {
+private func timestamp(_ date: Date = Date()) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.timeZone = TimeZone(secondsFromGMT: 0)
-    return formatter.string(from: Date())
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
+}
+
+private func parseTimestamp(_ value: String) -> Date? {
+    let fractionalFormatter = ISO8601DateFormatter()
+    fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractionalFormatter.date(from: value) {
+        return date
+    }
+
+    return ISO8601DateFormatter().date(from: value)
 }
 
 private struct IPTimeError: LocalizedError {

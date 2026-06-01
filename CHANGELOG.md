@@ -3,6 +3,16 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.26 - 2026-06-01
+
+- Added an animated `Checking IP` state in the menu bar while a manual
+  `Recheck IP Now` request is waiting for the daemon result.
+- Disabled duplicate manual recheck requests while one is already in progress.
+- The menu now shows `Rechecking IP ...` for the manual recheck item until the
+  fresh daemon status arrives.
+- Status timestamps now include fractional seconds so fast manual rechecks clear
+  precisely.
+
 ## v0.1.25 - 2026-06-01
 
 - Added `Recheck IP Now` to the menu for immediate manual VPN/IP region checks.

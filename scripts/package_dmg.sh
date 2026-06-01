@@ -24,11 +24,15 @@ APP_DEST="/Applications/IP Time.app"
 DAEMON_DEST="/usr/local/libexec/iptime-daemon"
 SUPPORT_DIR="/Library/Application Support/IPTime"
 PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
+AGENT_LABEL="local.iptime.menubar"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 
 echo "Uninstalling IP Time..."
 echo "You may be asked for your macOS administrator password."
 
 killall DualTimeMenuBar >/dev/null 2>&1 || true
+launchctl bootout "gui/$(id -u)" "$AGENT_PLIST" >/dev/null 2>&1 || true
+rm -f "$AGENT_PLIST"
 sudo launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
 sudo rm -f "$PLIST"
 sudo rm -f "$DAEMON_DEST"
@@ -57,10 +61,10 @@ Installed files:
   /Applications/IP Time.app
   /usr/local/libexec/iptime-daemon
   /Library/LaunchDaemons/local.iptime.daemon.plist
+  ~/Library/LaunchAgents/local.iptime.menubar.plist
   /Library/Application Support/IPTime/status.json
 
-After installation, add /Applications/IP Time.app to Login Items if you want
-the menu bar item to appear automatically after reboot.
+After installation, the menu bar item starts automatically at login.
 TEXT
 
 chmod +x "$DMG_ROOT/Uninstall.command"

@@ -32,6 +32,8 @@ DAEMON_DEST="/usr/local/libexec/iptime-daemon"
 SUPPORT_DIR="/Library/Application Support/IPTime"
 PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 LABEL="local.iptime.daemon"
+AGENT_LABEL="local.iptime.menubar"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 
 sudo install -d -o root -g wheel -m 755 /usr/local/libexec
 sudo install -d -o root -g wheel -m 755 "$SUPPORT_DIR"
@@ -75,10 +77,36 @@ sudo launchctl bootstrap system "$PLIST"
 sudo launchctl enable "system/$LABEL"
 sudo launchctl kickstart -k "system/$LABEL"
 
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+cat > "$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$AGENT_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$APP_DEST/Contents/MacOS/DualTimeMenuBar</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>$HOME/Library/Logs/IPTimeMenuBar.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$HOME/Library/Logs/IPTimeMenuBar.err.log</string>
+</dict>
+</plist>
+PLIST
+chmod 644 "$AGENT_PLIST"
+
 open "$APP_DEST"
 
 echo "Installed $APP_DEST"
 echo "Installed LaunchDaemon $LABEL"
+echo "Installed LaunchAgent $AGENT_LABEL"
 SCRIPT
 
 chmod +x "$DIST_DIR/install_prebuilt.sh" "$DIST_DIR/uninstall.sh"

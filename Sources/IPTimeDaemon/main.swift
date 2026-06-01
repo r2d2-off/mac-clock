@@ -413,7 +413,7 @@ private func findActiveUser() -> ActiveUser? {
     }
 
     let name = console.message.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !name.isEmpty, name != "root", name != "loginwindow" else {
+    guard !name.isEmpty, name != "root", name != "loginwindow", !name.hasPrefix("_") else {
         return nil
     }
 

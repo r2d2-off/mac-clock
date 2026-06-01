@@ -13,6 +13,9 @@ private let userSupportURL = FileManager.default.homeDirectoryForCurrentUser
 private let updateRequestURL = userSupportURL.appendingPathComponent("update-request.json")
 private let updateResultURL = userSupportURL.appendingPathComponent("update-result.json")
 private let moscowTimeZone = TimeZone(identifier: "Europe/Moscow")!
+private let launchAgentLabel = "local.iptime.menubar"
+private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
 
 private struct StatusSegment {
     let flag: String
@@ -152,6 +155,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             store.set(true, forKey: DefaultsKey.use24Hour)
         }
 
+        ensureLaunchAgent()
+
         let statusView = StatusBarView()
         statusView.toolTip = "IP time / Moscow time"
         statusView.onClick = { [weak self, weak statusView] in
@@ -182,6 +187,46 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusFont: NSFont {
         NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+    }
+
+    private func ensureLaunchAgent() {
+        let executableURL = Bundle.main.executableURL
+            ?? URL(fileURLWithPath: "/Applications/IP Time.app/Contents/MacOS/DualTimeMenuBar")
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>\(launchAgentLabel)</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(executableURL.path)</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>LimitLoadToSessionType</key>
+            <string>Aqua</string>
+            <key>StandardOutPath</key>
+            <string>\(home)/Library/Logs/IPTimeMenuBar.out.log</string>
+            <key>StandardErrorPath</key>
+            <string>\(home)/Library/Logs/IPTimeMenuBar.err.log</string>
+        </dict>
+        </plist>
+        """
+
+        do {
+            let data = Data(plist.utf8)
+            if let existing = try? Data(contentsOf: launchAgentURL), existing == data {
+                return
+            }
+
+            try FileManager.default.createDirectory(at: launchAgentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: launchAgentURL, options: .atomic)
+        } catch {
+            statusReadError = "Failed to install login item: \(error.localizedDescription)"
+        }
     }
 
     private var countryCode: String {

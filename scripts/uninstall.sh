@@ -6,8 +6,12 @@ DAEMON_DEST="/usr/local/libexec/iptime-daemon"
 SUPPORT_DIR="/Library/Application Support/IPTime"
 PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 LABEL="local.iptime.daemon"
+AGENT_LABEL="local.iptime.menubar"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 
 killall DualTimeMenuBar >/dev/null 2>&1 || true
+launchctl bootout "gui/$(id -u)" "$AGENT_PLIST" >/dev/null 2>&1 || true
+rm -f "$AGENT_PLIST"
 
 sudo launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
 sudo rm -f "$PLIST"

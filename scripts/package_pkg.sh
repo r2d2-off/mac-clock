@@ -65,6 +65,7 @@ exec >> "$LOG" 2>&1
 echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] preinstall start"
 
 LABEL="local.iptime.daemon"
+AGENT_LABEL="local.iptime.menubar"
 PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 
 /usr/bin/killall DualTimeMenuBar >/dev/null 2>&1 || true
@@ -89,6 +90,7 @@ DAEMON_DEST="/usr/local/libexec/iptime-daemon"
 SUPPORT_DIR="/Library/Application Support/IPTime"
 PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 LABEL="local.iptime.daemon"
+AGENT_LABEL="local.iptime.menubar"
 
 /usr/sbin/chown -R root:wheel "$APP_DEST" || true
 /usr/sbin/chown root:wheel "$DAEMON_DEST" "$PLIST" || true
@@ -105,9 +107,41 @@ LABEL="local.iptime.daemon"
 /bin/launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 || true
 
 CONSOLE_USER="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null || true)"
-if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "${CONSOLE_USER#_}" = "$CONSOLE_USER" ]; then
     CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+    USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //' || true)"
     if [ -n "$CONSOLE_UID" ]; then
+        if [ -z "$USER_HOME" ]; then
+            USER_HOME="/Users/$CONSOLE_USER"
+        fi
+
+        AGENT_DIR="$USER_HOME/Library/LaunchAgents"
+        AGENT_PLIST="$AGENT_DIR/$AGENT_LABEL.plist"
+        /bin/mkdir -p "$AGENT_DIR" "$USER_HOME/Library/Logs" || true
+        /bin/cat > "$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$AGENT_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$APP_DEST/Contents/MacOS/DualTimeMenuBar</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>$USER_HOME/Library/Logs/IPTimeMenuBar.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$USER_HOME/Library/Logs/IPTimeMenuBar.err.log</string>
+</dict>
+</plist>
+PLIST
+        /usr/sbin/chown "$CONSOLE_USER" "$AGENT_DIR" "$AGENT_PLIST" "$USER_HOME/Library/Logs" >/dev/null 2>&1 || true
+        /bin/chmod 644 "$AGENT_PLIST" >/dev/null 2>&1 || true
         /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/defaults write NSGlobalDomain AppleLanguages -array "en-US" >/dev/null 2>&1 || true
         /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "$APP_DEST" >/dev/null 2>&1 || true
     fi

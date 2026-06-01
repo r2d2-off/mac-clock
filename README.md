@@ -40,7 +40,8 @@ xcode-select --install
 ```
 
 `install.sh` asks for the admin password once. After that, the LaunchDaemon runs
-as root and timezone changes do not prompt again.
+as root, timezone changes do not prompt again, and the menu bar app starts
+automatically at login.
 
 ## Install From A DMG
 
@@ -117,6 +118,7 @@ To remove status and user config too:
 /usr/local/libexec/iptime-daemon
 /Library/LaunchDaemons/local.iptime.daemon.plist
 /Library/Application Support/IPTime/status.json
+~/Library/LaunchAgents/local.iptime.menubar.plist
 ~/Library/Application Support/IPTime/update-request.json
 ~/Library/Application Support/IPTime/update-result.json
 ```
@@ -174,5 +176,5 @@ the same visual result:
 3. Hide or minimize the system Clock menu bar display.
 4. Run `IP Time.app`.
 
-To start the menu bar app automatically, add `/Applications/IP Time.app` to
-Login Items.
+The installer creates `~/Library/LaunchAgents/local.iptime.menubar.plist`, so
+the menu bar app starts automatically after login.

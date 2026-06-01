@@ -40,7 +40,8 @@ timezones with country flags, so daylight saving time is handled correctly.
 Use `Settings -> IP Check Interval` to choose the regular background interval:
 1, 5, 10, 15, 30, or 60 minutes. The daemon reads interval changes live.
 
-If something fails, the VPN/IP segment turns red and the error is shown in the
+If the IP lookup fails before the daemon receives an IP address, the VPN/IP
+segment shows a red `ip-api.com error` state. The full error is shown in the
 menu.
 
 The menu bar app checks GitHub Releases once at launch and then every 6 hours.
@@ -170,8 +171,10 @@ daemon binary so future self-updates can restart cleanly.
 
 ## IP And Locale Rules
 
-The daemon uses `http://ip-api.com/json` for external IP, country code, city,
-region, and timezone detection.
+The daemon uses the free `http://ip-api.com/json` endpoint for external IP,
+country code, city, region, and timezone detection. This endpoint is
+intentionally HTTP because the free ip-api.com API does not serve this route over
+HTTPS.
 
 Supported regional mappings:
 

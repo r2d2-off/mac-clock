@@ -3,6 +3,13 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.32 - 2026-06-01
+
+- Added an explicit red `ip-api.com error` state in the VPN/IP menu bar segment
+  when the region lookup fails before returning an IP address.
+- Documented that the app intentionally uses the free HTTP-only ip-api.com
+  endpoint for IP, region, and timezone detection.
+
 ## v0.1.31 - 2026-06-01
 
 - Reduced noisy automatic IP rechecks by replacing the raw macOS network

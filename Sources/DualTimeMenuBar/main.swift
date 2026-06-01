@@ -69,11 +69,12 @@ private struct StatusSegment {
     }
 
     var summary: String {
+        let flagPart = flag.isEmpty ? nil : flag
         if detailFirst {
-            return [flag, detail, primary].compactMap { $0 }.joined(separator: " ")
+            return [flagPart, detail, primary].compactMap { $0 }.joined(separator: " ")
         }
 
-        return [flag, primary, detail].compactMap { $0 }.joined(separator: " ")
+        return [flagPart, primary, detail].compactMap { $0 }.joined(separator: " ")
     }
 }
 
@@ -369,6 +370,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return statusReadError
+    }
+
+    private var hasIPLookupError: Bool {
+        status?.error != nil && nonEmpty(status?.ip) == nil
     }
 
     @objc private func timerFired() {
@@ -1169,6 +1174,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         ]
 
+        if hasIPLookupError {
+            segments[1] = StatusSegment(
+                flag: "",
+                primary: "[ ip-api.com error ]",
+                detail: nil,
+                detailFirst: false,
+                isError: true
+            )
+        }
+
         if case .requested(let version) = updateState {
             segments[1] = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
         }
@@ -1620,9 +1635,11 @@ private final class StatusBarView: NSView {
     private func drawSegment(_ segment: StatusSegment, in rect: NSRect) {
         var x = rect.minX + segmentPadding
 
-        let flag = attributed(segment.flag, font: primaryFont, color: NSColor.controlTextColor)
-        draw(flag, atX: x, centerY: rect.midY)
-        x += flag.size().width + flagGap
+        if !segment.flag.isEmpty {
+            let flag = attributed(segment.flag, font: primaryFont, color: NSColor.controlTextColor)
+            draw(flag, atX: x, centerY: rect.midY)
+            x += flag.size().width + flagGap
+        }
 
         let primaryColor = segment.isError ? NSColor.systemRed : NSColor.controlTextColor
         let primary = attributed(segment.primary, font: primaryFont, color: primaryColor)
@@ -1747,8 +1764,10 @@ private final class StatusBarView: NSView {
 
     private func segmentWidth(for segment: StatusSegment) -> CGFloat {
         var width = segmentPadding * 2
-        width += attributed(segment.flag, font: primaryFont, color: .controlTextColor).size().width
-        width += flagGap
+        if !segment.flag.isEmpty {
+            width += attributed(segment.flag, font: primaryFont, color: .controlTextColor).size().width
+            width += flagGap
+        }
         width += attributed(segment.primary, font: primaryFont, color: .controlTextColor).size().width
 
         if let detail = segment.detail {

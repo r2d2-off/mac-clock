@@ -522,7 +522,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenuItems() -> [NSMenuItem] {
         switch updateState {
         case .idle:
-            return [NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")]
+            return [NSMenuItem(title: "Check Update...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")]
         case .checking:
             let item = NSMenuItem(title: "Checking for Updates...", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -532,7 +532,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             status.isEnabled = false
             return [
                 status,
-                NSMenuItem(title: "Check Again...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+                NSMenuItem(title: "Check Update...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
             ]
         case .available(let candidate):
             return [NSMenuItem(title: "Install Update \(candidate.version)", action: #selector(installUpdateFromMenu), keyEquivalent: "")]
@@ -550,7 +550,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             return [
                 status,
-                NSMenuItem(title: "Retry Update Check...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+                NSMenuItem(title: "Check Update...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
             ]
         }
     }

@@ -9,8 +9,7 @@ private let supportDirectoryURL = statusURL.deletingLastPathComponent()
 private let regionCheckStateURL = supportDirectoryURL.appendingPathComponent("check-state.json")
 private let systemPreferenceBackupURL = supportDirectoryURL.appendingPathComponent("original-system-preferences.json")
 private let systemPreferenceRestoreScriptURL = supportDirectoryURL.appendingPathComponent("restore-system-preferences.sh")
-private let userPreferenceBackupFileName = "original-user-preferences.json"
-private let userPreferenceRestoreScriptFileName = "restore-user-preferences.sh"
+private let systemRegionSyncRestoreStateURL = supportDirectoryURL.appendingPathComponent("region-sync-restore-state.json")
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let defaultRegionCheckInterval: TimeInterval = 600
@@ -22,15 +21,6 @@ private let networkChangeDebounceInterval: TimeInterval = 5
 private let networkChangeMinimumCheckInterval: TimeInterval = 10
 private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
 private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
-private let regionSyncRestoreStateFileName = "region-sync-restore-state.json"
-private let userPreferenceKeysToBackup = [
-    "AppleLanguages",
-    "AppleLocale",
-    "AppleMetricUnits",
-    "AppleMeasurementUnits",
-    "AppleTemperatureUnit",
-    "AppleFirstWeekday"
-]
 
 private struct IPInfoResponse: Decodable {
     let status: String?
@@ -162,48 +152,6 @@ private struct RegionSyncRestoreState: Encodable {
 private struct SystemPreferenceBackup: Encodable {
     let createdAt: String
     let timeZone: String?
-}
-
-private struct UserPreferenceBackup: Encodable {
-    let createdAt: String
-    let user: String
-    let preferences: [String: UserPreferenceBackupValue]
-}
-
-private struct UserPreferenceBackupValue: Encodable {
-    enum Kind: String, Encodable {
-        case missing
-        case string
-        case bool
-        case int
-        case stringArray
-    }
-
-    let kind: Kind
-    let stringValue: String?
-    let boolValue: Bool?
-    let intValue: Int?
-    let stringArrayValue: [String]?
-
-    static func missing() -> UserPreferenceBackupValue {
-        UserPreferenceBackupValue(kind: .missing, stringValue: nil, boolValue: nil, intValue: nil, stringArrayValue: nil)
-    }
-
-    static func string(_ value: String) -> UserPreferenceBackupValue {
-        UserPreferenceBackupValue(kind: .string, stringValue: value, boolValue: nil, intValue: nil, stringArrayValue: nil)
-    }
-
-    static func bool(_ value: Bool) -> UserPreferenceBackupValue {
-        UserPreferenceBackupValue(kind: .bool, stringValue: nil, boolValue: value, intValue: nil, stringArrayValue: nil)
-    }
-
-    static func int(_ value: Int) -> UserPreferenceBackupValue {
-        UserPreferenceBackupValue(kind: .int, stringValue: nil, boolValue: nil, intValue: value, stringArrayValue: nil)
-    }
-
-    static func stringArray(_ value: [String]) -> UserPreferenceBackupValue {
-        UserPreferenceBackupValue(kind: .stringArray, stringValue: nil, boolValue: nil, intValue: nil, stringArrayValue: value)
-    }
 }
 
 private final class NetworkChangeMonitor {
@@ -454,56 +402,47 @@ private final class Runner {
         }
 
         guard isRegionSyncEnabled(activeUser: activeUser) else {
-            let error = isDryRun ? nil : restoreOriginalPreferencesIfNeeded(activeUser: activeUser)
+            let error = isDryRun ? nil : restoreOriginalSystemPreferencesIfNeeded()
             writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error)
             return
         }
 
         if !isDryRun {
-            clearRegionSyncRestoreState(activeUser: activeUser)
+            clearRegionSyncRestoreState()
         }
 
         do {
             let info = try await fetchIPInfo()
-            let result = apply(info: info, activeUser: activeUser)
+            let result = apply(info: info)
             writeStatus(info: info, activeUser: activeUser, locale: result.locale, rule: result.rule, error: result.error)
         } catch {
             writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error.localizedDescription)
         }
     }
 
-    private func restoreOriginalPreferencesIfNeeded(activeUser: ActiveUser?) -> String? {
-        guard let activeUser else {
+    private func restoreOriginalSystemPreferencesIfNeeded() -> String? {
+        if FileManager.default.fileExists(atPath: systemRegionSyncRestoreStateURL.path) {
             return nil
         }
 
-        let stateURL = regionSyncRestoreStateURL(for: activeUser)
-        if FileManager.default.fileExists(atPath: stateURL.path) {
-            return nil
-        }
-
-        if let error = restoreOriginalPreferences(activeUser: activeUser) {
+        if let error = restoreOriginalSystemPreferences() {
             return error
         }
 
         do {
-            try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: systemRegionSyncRestoreStateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let state = RegionSyncRestoreState(restoredAt: timestamp())
-            try writeJSON(state, to: stateURL)
-            _ = runProcess(path: "/usr/sbin/chown", arguments: [activeUser.name, stateURL.path])
-            _ = runProcess(path: "/bin/chmod", arguments: ["600", stateURL.path])
+            try writeJSON(state, to: systemRegionSyncRestoreStateURL)
+            _ = runProcess(path: "/usr/sbin/chown", arguments: ["root:wheel", systemRegionSyncRestoreStateURL.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["600", systemRegionSyncRestoreStateURL.path])
             return nil
         } catch {
             return "Failed to record region sync restore state: \(error.localizedDescription)"
         }
     }
 
-    private func clearRegionSyncRestoreState(activeUser: ActiveUser?) {
-        guard let activeUser else {
-            return
-        }
-
-        try? FileManager.default.removeItem(at: regionSyncRestoreStateURL(for: activeUser))
+    private func clearRegionSyncRestoreState() {
+        try? FileManager.default.removeItem(at: systemRegionSyncRestoreStateURL)
     }
 
     private func handleUpdateRequest(activeUser: ActiveUser?) async {
@@ -644,7 +583,7 @@ private final class Runner {
         _ = runAsUser(activeUser, arguments: ["open", appDestinationURL.path])
     }
 
-    private func apply(info: IPInfo, activeUser: ActiveUser?) -> ApplyResult {
+    private func apply(info: IPInfo) -> ApplyResult {
         let country = info.countryCode
         guard let rule = regionRules[country] else {
             return ApplyResult(locale: nil, rule: nil, error: "No regional rule for country \(country); system not changed")
@@ -660,20 +599,6 @@ private final class Runner {
             errors.append(error)
             return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
         }
-
-        guard let activeUser else {
-            return ApplyResult(locale: rule.locale, rule: rule, error: "No active console user; timezone applied but user regional preferences not changed")
-        }
-
-        if isDryRun {
-            return ApplyResult(locale: rule.locale, rule: rule, error: nil)
-        }
-
-        guard backupUserPreferencesIfNeeded(activeUser, errors: &errors) else {
-            return ApplyResult(locale: rule.locale, rule: rule, error: errors.joined(separator: "; "))
-        }
-
-        applyUserRegionalPreferences(rule: rule, activeUser: activeUser, errors: &errors)
 
         return ApplyResult(locale: rule.locale, rule: rule, error: errors.isEmpty ? nil : errors.joined(separator: "; "))
     }
@@ -705,152 +630,15 @@ private final class Runner {
         }
     }
 
-    private func backupUserPreferencesIfNeeded(_ activeUser: ActiveUser, errors: inout [String]) -> Bool {
-        guard !isDryRun else {
-            return true
-        }
-
-        let backupURL = userPreferenceBackupURL(for: activeUser)
-        if FileManager.default.fileExists(atPath: backupURL.path) {
-            return true
-        }
-
-        let exportResult = runAsUser(activeUser, arguments: ["defaults", "export", "NSGlobalDomain", "-"])
-        guard exportResult.success,
-              let data = exportResult.message.data(using: .utf8),
-              let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
-              let globalDomain = propertyList as? [String: Any] else {
-            errors.append("Failed to save original user preferences; user regional preferences not changed")
-            return false
-        }
-
-        let preferences = Dictionary(uniqueKeysWithValues: userPreferenceKeysToBackup.map { key in
-            (key, userPreferenceBackupValue(from: globalDomain[key]))
-        })
-        let backup = UserPreferenceBackup(createdAt: timestamp(), user: activeUser.name, preferences: preferences)
-        let directory = userSupportDirectoryURL(for: activeUser)
-        let restoreScriptURL = userPreferenceRestoreScriptURL(for: activeUser)
-
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try writeJSON(backup, to: backupURL)
-            try userPreferenceRestoreScript(preferences: preferences).data(using: .utf8)?.write(to: restoreScriptURL, options: .atomic)
-            _ = runProcess(path: "/usr/sbin/chown", arguments: ["-R", activeUser.name, directory.path])
-            _ = runProcess(path: "/bin/chmod", arguments: ["700", directory.path])
-            _ = runProcess(path: "/bin/chmod", arguments: ["600", backupURL.path])
-            _ = runProcess(path: "/bin/chmod", arguments: ["700", restoreScriptURL.path])
-            return true
-        } catch {
-            errors.append("Failed to save original user preferences: \(error.localizedDescription); user regional preferences not changed")
-            return false
-        }
-    }
-
-    private func restoreOriginalPreferences(activeUser: ActiveUser?) -> String? {
-        var errors: [String] = []
-
-        if let activeUser {
-            let restoreScriptURL = userPreferenceRestoreScriptURL(for: activeUser)
-            if FileManager.default.fileExists(atPath: restoreScriptURL.path) {
-                let result = runAsUser(activeUser, executablePath: "/bin/sh", arguments: [restoreScriptURL.path])
-                if !result.success {
-                    errors.append("Failed to restore user preferences: \(result.message)")
-                }
-            }
-        }
-
+    private func restoreOriginalSystemPreferences() -> String? {
         if FileManager.default.fileExists(atPath: systemPreferenceRestoreScriptURL.path) {
             let result = runProcess(path: "/bin/sh", arguments: [systemPreferenceRestoreScriptURL.path])
             if !result.success {
-                errors.append("Failed to restore system preferences: \(result.message)")
+                return "Failed to restore system preferences: \(result.message)"
             }
         }
 
-        return errors.isEmpty ? nil : errors.joined(separator: "; ")
-    }
-
-    private func applyUserRegionalPreferences(rule: RegionRule, activeUser: ActiveUser, errors: inout [String]) {
-        writeUserDefaultIfNeeded(
-            activeUser,
-            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleLocale"],
-            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleLocale", "-string", rule.locale],
-            expected: .string(rule.locale),
-            label: "AppleLocale",
-            errors: &errors
-        )
-        writeUserDefaultIfNeeded(
-            activeUser,
-            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleMetricUnits"],
-            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleMetricUnits", "-bool", rule.metricUnits ? "true" : "false"],
-            expected: .bool(rule.metricUnits),
-            label: "AppleMetricUnits",
-            errors: &errors
-        )
-        writeUserDefaultIfNeeded(
-            activeUser,
-            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleMeasurementUnits"],
-            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", rule.measurementUnits],
-            expected: .string(rule.measurementUnits),
-            label: "AppleMeasurementUnits",
-            errors: &errors
-        )
-        writeUserDefaultIfNeeded(
-            activeUser,
-            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleTemperatureUnit"],
-            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", rule.temperatureUnit],
-            expected: .string(rule.temperatureUnit),
-            label: "AppleTemperatureUnit",
-            errors: &errors
-        )
-        writeUserDefaultIfNeeded(
-            activeUser,
-            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleFirstWeekday"],
-            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(rule.firstWeekday)],
-            expected: .int(rule.firstWeekday),
-            label: "AppleFirstWeekday",
-            errors: &errors
-        )
-    }
-
-    private enum UserDefaultExpectedValue {
-        case string(String)
-        case bool(Bool)
-        case int(Int)
-    }
-
-    private func writeUserDefaultIfNeeded(
-        _ activeUser: ActiveUser,
-        readArguments: [String],
-        writeArguments: [String],
-        expected: UserDefaultExpectedValue,
-        label: String,
-        errors: inout [String]
-    ) {
-        let readResult = runAsUser(activeUser, arguments: readArguments)
-        if readResult.success, userDefaultValue(readResult.message, matches: expected) {
-            return
-        }
-
-        let result = runAsUser(activeUser, arguments: writeArguments)
-        if !result.success {
-            errors.append("Failed to set \(label): \(result.message)")
-        }
-    }
-
-    private func userDefaultValue(_ value: String, matches expected: UserDefaultExpectedValue) -> Bool {
-        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        switch expected {
-        case .string(let expectedValue):
-            return normalizedValue == expectedValue
-        case .bool(let expectedValue):
-            let lowercased = normalizedValue.lowercased()
-            let trueValues = Set(["1", "true", "yes"])
-            let falseValues = Set(["0", "false", "no"])
-            return expectedValue ? trueValues.contains(lowercased) : falseValues.contains(lowercased)
-        case .int(let expectedValue):
-            return Int(normalizedValue) == expectedValue
-        }
+        return nil
     }
 
     private func applyTimeZoneIfNeeded(_ timeZone: String) -> String? {
@@ -1102,39 +890,32 @@ private func fetchDecodable<T: Decodable>(_ type: T.Type, from url: URL) async t
 }
 
 private func findActiveUser() -> ActiveUser? {
-    let console = runProcess(path: "/usr/bin/stat", arguments: ["-f", "%Su", "/dev/console"])
-    guard console.success else {
+    var uid: uid_t = 0
+    var gid: gid_t = 0
+    guard let consoleUser = SCDynamicStoreCopyConsoleUser(nil, &uid, &gid) else {
         return nil
     }
 
-    let name = console.message.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = (consoleUser as String).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !name.isEmpty, name != "root", name != "loginwindow", !name.hasPrefix("_") else {
         return nil
     }
 
-    let uidResult = runProcess(path: "/usr/bin/id", arguments: ["-u", name])
-    guard uidResult.success else {
-        return nil
-    }
-
-    let homeResult = runProcess(path: "/usr/bin/dscl", arguments: [".", "-read", "/Users/\(name)", "NFSHomeDirectory"])
-    let home = parseHomeDirectory(homeResult.message) ?? "/Users/\(name)"
-
     return ActiveUser(
         name: name,
-        uid: uidResult.message.trimmingCharacters(in: .whitespacesAndNewlines),
-        home: home
+        uid: String(uid),
+        home: homeDirectory(for: name) ?? "/Users/\(name)"
     )
 }
 
-private func parseHomeDirectory(_ dsclOutput: String) -> String? {
-    let prefix = "NFSHomeDirectory:"
-    guard let line = dsclOutput.split(separator: "\n").map(String.init).first(where: { $0.hasPrefix(prefix) }) else {
-        return nil
-    }
+private func homeDirectory(for userName: String) -> String? {
+    userName.withCString { pointer in
+        guard let passwd = getpwnam(pointer), let home = passwd.pointee.pw_dir else {
+            return nil
+        }
 
-    let value = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
-    return value.isEmpty ? nil : value
+        return String(cString: home)
+    }
 }
 
 private func runAsUser(_ user: ActiveUser, arguments: [String]) -> (success: Bool, message: String) {
@@ -1151,18 +932,6 @@ private func runAsUser(_ user: ActiveUser, executablePath: String, arguments: [S
 private func userSupportDirectoryURL(for user: ActiveUser) -> URL {
     URL(fileURLWithPath: user.home, isDirectory: true)
         .appendingPathComponent("Library/Application Support/IPTime", isDirectory: true)
-}
-
-private func userPreferenceBackupURL(for user: ActiveUser) -> URL {
-    userSupportDirectoryURL(for: user).appendingPathComponent(userPreferenceBackupFileName)
-}
-
-private func userPreferenceRestoreScriptURL(for user: ActiveUser) -> URL {
-    userSupportDirectoryURL(for: user).appendingPathComponent(userPreferenceRestoreScriptFileName)
-}
-
-private func regionSyncRestoreStateURL(for user: ActiveUser) -> URL {
-    userSupportDirectoryURL(for: user).appendingPathComponent(regionSyncRestoreStateFileName)
 }
 
 private func updateRequestURL(for user: ActiveUser) -> URL {
@@ -1310,88 +1079,6 @@ private func systemPreferenceRestoreScript(timeZone: String?) -> String {
         lines.append("/usr/sbin/systemsetup -settimezone \(shellQuoted(timeZone)) >/dev/null 2>&1 || true")
     }
 
-    lines.append("exit 0")
-    return lines.joined(separator: "\n") + "\n"
-}
-
-private func userPreferenceBackupValue(from value: Any?) -> UserPreferenceBackupValue {
-    guard let value else {
-        return .missing()
-    }
-
-    if let stringArray = value as? [String] {
-        return .stringArray(stringArray)
-    }
-
-    if let array = value as? [Any] {
-        let strings = array.compactMap { $0 as? String }
-        if strings.count == array.count {
-            return .stringArray(strings)
-        }
-    }
-
-    if let stringValue = value as? String {
-        return .string(stringValue)
-    }
-
-    if let boolValue = value as? Bool {
-        return .bool(boolValue)
-    }
-
-    if let numberValue = value as? NSNumber {
-        if CFGetTypeID(numberValue) == CFBooleanGetTypeID() {
-            return .bool(numberValue.boolValue)
-        }
-
-        return .int(numberValue.intValue)
-    }
-
-    if let intValue = value as? Int {
-        return .int(intValue)
-    }
-
-    return .missing()
-}
-
-private func userPreferenceRestoreScript(preferences: [String: UserPreferenceBackupValue]) -> String {
-    var lines = [
-        "#!/bin/sh",
-        "set +e"
-    ]
-
-    for key in userPreferenceKeysToBackup {
-        guard let value = preferences[key] else {
-            continue
-        }
-
-        switch value.kind {
-        case .missing:
-            lines.append("/usr/bin/defaults delete NSGlobalDomain \(shellQuoted(key)) >/dev/null 2>&1 || true")
-        case .string:
-            guard let stringValue = value.stringValue else {
-                continue
-            }
-            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -string \(shellQuoted(stringValue)) >/dev/null 2>&1 || true")
-        case .bool:
-            guard let boolValue = value.boolValue else {
-                continue
-            }
-            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -bool \(boolValue ? "true" : "false") >/dev/null 2>&1 || true")
-        case .int:
-            guard let intValue = value.intValue else {
-                continue
-            }
-            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -int \(intValue) >/dev/null 2>&1 || true")
-        case .stringArray:
-            guard let stringArrayValue = value.stringArrayValue else {
-                continue
-            }
-            let values = stringArrayValue.map(shellQuoted).joined(separator: " ")
-            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -array \(values) >/dev/null 2>&1 || true")
-        }
-    }
-
-    lines.append("/usr/bin/killall cfprefsd >/dev/null 2>&1 || true")
     lines.append("exit 0")
     return lines.joined(separator: "\n") + "\n"
 }

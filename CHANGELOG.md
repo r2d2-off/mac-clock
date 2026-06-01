@@ -11,6 +11,8 @@ on GitHub Releases.
   preferences and stops future automatic timezone/locale changes.
 - Cached active-user detection in the daemon loop instead of spawning `stat`,
   `id`, and `dscl` once per second while idle.
+- Moved active-user regional preference backup/apply/restore out of the root
+  daemon and into the per-user menu bar LaunchAgent.
 - Limited Region Sync restore to the disable transition instead of repeating it
   on every scheduled check while sync is off.
 - Updated source and DMG uninstall flows to restore saved preferences before

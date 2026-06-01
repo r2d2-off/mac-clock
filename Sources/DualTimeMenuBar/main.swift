@@ -17,6 +17,8 @@ private let updateResultURL = userSupportURL.appendingPathComponent("update-resu
 private let recheckRequestURL = userSupportURL.appendingPathComponent("recheck-request.json")
 private let configURL = userSupportURL.appendingPathComponent("config.json")
 private let regionSyncRestoreStateURL = userSupportURL.appendingPathComponent("region-sync-restore-state.json")
+private let userPreferenceBackupURL = userSupportURL.appendingPathComponent("original-user-preferences.json")
+private let userPreferenceRestoreScriptURL = userSupportURL.appendingPathComponent("restore-user-preferences.sh")
 private let moscowTimeZone = TimeZone(identifier: "Europe/Moscow")!
 private let launchAgentLabel = "local.iptime.menubar"
 private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
@@ -29,6 +31,14 @@ private let uiRefreshInterval: TimeInterval = 0.25
 private let manualRecheckTimeout: TimeInterval = 120
 private let regionCheckStateMaxAge: TimeInterval = 120
 private let completedCheckIndicatorDuration: TimeInterval = 1.5
+private let userPreferenceKeysToBackup = [
+    "AppleLanguages",
+    "AppleLocale",
+    "AppleMetricUnits",
+    "AppleMeasurementUnits",
+    "AppleTemperatureUnit",
+    "AppleFirstWeekday"
+]
 
 private enum StatusActivityIndicator {
     case none
@@ -174,6 +184,58 @@ private struct IPTimeConfig: Codable {
     }
 }
 
+private struct RegionSyncRestoreState: Encodable {
+    let restoredAt: String
+}
+
+private struct UserPreferenceBackup: Encodable {
+    let createdAt: String
+    let user: String
+    let preferences: [String: UserPreferenceBackupValue]
+}
+
+private struct UserPreferenceBackupValue: Encodable {
+    enum Kind: String, Encodable {
+        case missing
+        case string
+        case bool
+        case int
+        case stringArray
+    }
+
+    let kind: Kind
+    let stringValue: String?
+    let boolValue: Bool?
+    let intValue: Int?
+    let stringArrayValue: [String]?
+
+    static func missing() -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .missing, stringValue: nil, boolValue: nil, intValue: nil, stringArrayValue: nil)
+    }
+
+    static func string(_ value: String) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .string, stringValue: value, boolValue: nil, intValue: nil, stringArrayValue: nil)
+    }
+
+    static func bool(_ value: Bool) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .bool, stringValue: nil, boolValue: value, intValue: nil, stringArrayValue: nil)
+    }
+
+    static func int(_ value: Int) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .int, stringValue: nil, boolValue: nil, intValue: value, stringArrayValue: nil)
+    }
+
+    static func stringArray(_ value: [String]) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .stringArray, stringValue: nil, boolValue: nil, intValue: nil, stringArrayValue: value)
+    }
+}
+
+private enum UserDefaultExpectedValue {
+    case string(String)
+    case bool(Bool)
+    case int(Int)
+}
+
 private struct HomeClockOption {
     let id: String
     let menuTitle: String
@@ -255,6 +317,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateState: UpdateState = .idle
     private var lastUpdateCheck = Date.distantPast
     private var updateCheckInFlight = false
+    private var lastAppliedRegionalPreferencesSignature: String?
     private var lastUpdateResultSignature: String?
     private var latestUpdateResult: UpdateResult?
     private var updateProgressWindow: NSWindow?
@@ -454,6 +517,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try writeConfig()
             try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
+            syncUserRegionalPreferences()
             _ = try requestRegionCheck()
             manualRecheckError = nil
         } catch {
@@ -578,6 +642,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             status = try JSONDecoder().decode(IPTimeStatus.self, from: data)
             statusReadError = nil
             clearManualRecheckIfCompleted()
+            syncUserRegionalPreferences()
         } catch {
             status = nil
             statusReadError = "No daemon status yet: \(error.localizedDescription)"
@@ -607,6 +672,167 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             homeClock: normalizedHomeClock(decoded.homeClock),
             regionSyncEnabled: decoded.regionSyncEnabled ?? true
         )
+    }
+
+    private func syncUserRegionalPreferences() {
+        guard regionSyncEnabled else {
+            lastAppliedRegionalPreferencesSignature = nil
+            if let error = restoreOriginalUserPreferencesIfNeeded() {
+                statusReadError = error
+            }
+            return
+        }
+
+        try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
+
+        guard let status,
+              status.error == nil,
+              let signature = regionalPreferencesSignature(status),
+              signature != lastAppliedRegionalPreferencesSignature,
+              let locale = status.locale,
+              let measurementUnits = status.measurementUnits,
+              let metricUnits = status.metricUnits,
+              let temperatureUnit = status.temperatureUnit,
+              let firstWeekday = status.firstWeekday else {
+            return
+        }
+
+        do {
+            try backupUserPreferencesIfNeeded()
+            try applyUserRegionalPreferences(
+                locale: locale,
+                metricUnits: metricUnits,
+                measurementUnits: measurementUnits,
+                temperatureUnit: temperatureUnit,
+                firstWeekday: firstWeekday
+            )
+            lastAppliedRegionalPreferencesSignature = signature
+        } catch {
+            statusReadError = "Failed to apply user regional preferences: \(error.localizedDescription)"
+        }
+    }
+
+    private func regionalPreferencesSignature(_ status: IPTimeStatus) -> String? {
+        guard let generatedAt = status.generatedAt,
+              let locale = status.locale,
+              let measurementUnits = status.measurementUnits,
+              let metricUnits = status.metricUnits,
+              let temperatureUnit = status.temperatureUnit,
+              let firstWeekday = status.firstWeekday else {
+            return nil
+        }
+
+        return [
+            generatedAt,
+            locale,
+            measurementUnits,
+            String(metricUnits),
+            temperatureUnit,
+            String(firstWeekday)
+        ].joined(separator: "|")
+    }
+
+    private func backupUserPreferencesIfNeeded() throws {
+        if FileManager.default.fileExists(atPath: userPreferenceBackupURL.path) {
+            return
+        }
+
+        let exportResult = runProcess(path: "/usr/bin/defaults", arguments: ["export", "NSGlobalDomain", "-"])
+        guard exportResult.success,
+              let data = exportResult.message.data(using: .utf8),
+              let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let globalDomain = propertyList as? [String: Any] else {
+            throw IPTimeMenuError("failed to read original user preferences")
+        }
+
+        let preferences = Dictionary(uniqueKeysWithValues: userPreferenceKeysToBackup.map { key in
+            (key, userPreferenceBackupValue(from: globalDomain[key]))
+        })
+        let backup = UserPreferenceBackup(createdAt: timestamp(), user: NSUserName(), preferences: preferences)
+
+        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+        try writeJSON(backup, to: userPreferenceBackupURL)
+        try userPreferenceRestoreScript(preferences: preferences).data(using: .utf8)?.write(to: userPreferenceRestoreScriptURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: userPreferenceBackupURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: userPreferenceRestoreScriptURL.path)
+    }
+
+    private func applyUserRegionalPreferences(
+        locale: String,
+        metricUnits: Bool,
+        measurementUnits: String,
+        temperatureUnit: String,
+        firstWeekday: Int
+    ) throws {
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleLocale"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleLocale", "-string", locale],
+            expected: .string(locale),
+            label: "AppleLocale"
+        )
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleMetricUnits"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleMetricUnits", "-bool", metricUnits ? "true" : "false"],
+            expected: .bool(metricUnits),
+            label: "AppleMetricUnits"
+        )
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleMeasurementUnits"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", measurementUnits],
+            expected: .string(measurementUnits),
+            label: "AppleMeasurementUnits"
+        )
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleTemperatureUnit"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", temperatureUnit],
+            expected: .string(temperatureUnit),
+            label: "AppleTemperatureUnit"
+        )
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleFirstWeekday"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(firstWeekday)],
+            expected: .int(firstWeekday),
+            label: "AppleFirstWeekday"
+        )
+    }
+
+    private func writeUserDefaultIfNeeded(
+        readArguments: [String],
+        writeArguments: [String],
+        expected: UserDefaultExpectedValue,
+        label: String
+    ) throws {
+        let readResult = runProcess(path: "/usr/bin/defaults", arguments: readArguments)
+        if readResult.success, userDefaultValue(readResult.message, matches: expected) {
+            return
+        }
+
+        let writeResult = runProcess(path: "/usr/bin/defaults", arguments: writeArguments)
+        if !writeResult.success {
+            throw IPTimeMenuError("failed to set \(label): \(writeResult.message)")
+        }
+    }
+
+    private func restoreOriginalUserPreferencesIfNeeded() -> String? {
+        if FileManager.default.fileExists(atPath: regionSyncRestoreStateURL.path) {
+            return nil
+        }
+
+        if FileManager.default.fileExists(atPath: userPreferenceRestoreScriptURL.path) {
+            let result = runProcess(path: "/bin/sh", arguments: [userPreferenceRestoreScriptURL.path])
+            if !result.success {
+                return "Failed to restore user preferences: \(result.message)"
+            }
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+            try writeJSON(RegionSyncRestoreState(restoredAt: timestamp()), to: regionSyncRestoreStateURL)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: regionSyncRestoreStateURL.path)
+            return nil
+        } catch {
+            return "Failed to record user restore state: \(error.localizedDescription)"
+        }
     }
 
     private func loadPendingManualRecheckState() {
@@ -1560,7 +1786,154 @@ private func parseTimestamp(_ value: String) -> Date? {
     return ISO8601DateFormatter().date(from: value)
 }
 
+private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(value).write(to: url, options: .atomic)
+}
+
+private func userPreferenceBackupValue(from value: Any?) -> UserPreferenceBackupValue {
+    guard let value else {
+        return .missing()
+    }
+
+    if let stringArray = value as? [String] {
+        return .stringArray(stringArray)
+    }
+
+    if let array = value as? [Any] {
+        let strings = array.compactMap { $0 as? String }
+        if strings.count == array.count {
+            return .stringArray(strings)
+        }
+    }
+
+    if let stringValue = value as? String {
+        return .string(stringValue)
+    }
+
+    if let boolValue = value as? Bool {
+        return .bool(boolValue)
+    }
+
+    if let numberValue = value as? NSNumber {
+        if CFGetTypeID(numberValue) == CFBooleanGetTypeID() {
+            return .bool(numberValue.boolValue)
+        }
+
+        return .int(numberValue.intValue)
+    }
+
+    if let intValue = value as? Int {
+        return .int(intValue)
+    }
+
+    return .missing()
+}
+
+private func userPreferenceRestoreScript(preferences: [String: UserPreferenceBackupValue]) -> String {
+    var lines = [
+        "#!/bin/sh",
+        "set +e"
+    ]
+
+    for key in userPreferenceKeysToBackup {
+        guard let value = preferences[key] else {
+            continue
+        }
+
+        switch value.kind {
+        case .missing:
+            lines.append("/usr/bin/defaults delete NSGlobalDomain \(shellQuoted(key)) >/dev/null 2>&1 || true")
+        case .string:
+            guard let stringValue = value.stringValue else {
+                continue
+            }
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -string \(shellQuoted(stringValue)) >/dev/null 2>&1 || true")
+        case .bool:
+            guard let boolValue = value.boolValue else {
+                continue
+            }
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -bool \(boolValue ? "true" : "false") >/dev/null 2>&1 || true")
+        case .int:
+            guard let intValue = value.intValue else {
+                continue
+            }
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -int \(intValue) >/dev/null 2>&1 || true")
+        case .stringArray:
+            guard let stringArrayValue = value.stringArrayValue else {
+                continue
+            }
+            let values = stringArrayValue.map(shellQuoted).joined(separator: " ")
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -array \(values) >/dev/null 2>&1 || true")
+        }
+    }
+
+    lines.append("/usr/bin/killall cfprefsd >/dev/null 2>&1 || true")
+    lines.append("exit 0")
+    return lines.joined(separator: "\n") + "\n"
+}
+
+private func userDefaultValue(_ value: String, matches expected: UserDefaultExpectedValue) -> Bool {
+    let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    switch expected {
+    case .string(let expectedValue):
+        return normalizedValue == expectedValue
+    case .bool(let expectedValue):
+        let lowercased = normalizedValue.lowercased()
+        let trueValues = Set(["1", "true", "yes"])
+        let falseValues = Set(["0", "false", "no"])
+        return expectedValue ? trueValues.contains(lowercased) : falseValues.contains(lowercased)
+    case .int(let expectedValue):
+        return Int(normalizedValue) == expectedValue
+    }
+}
+
+private func runProcess(path: String, arguments: [String]) -> (success: Bool, message: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
+
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+    } catch {
+        return (false, error.localizedDescription)
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let message = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+    if process.terminationStatus == 0 {
+        return (true, message)
+    }
+
+    return (false, message.isEmpty ? "exit code \(process.terminationStatus)" : message)
+}
+
+private func shellQuoted(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
 private struct IPTimeError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? {
+        message
+    }
+}
+
+private struct IPTimeMenuError: LocalizedError {
     let message: String
 
     init(_ message: String) {

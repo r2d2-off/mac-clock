@@ -170,6 +170,7 @@ daemon binary so future self-updates can restart cleanly.
 /Library/LaunchDaemons/local.iptime.daemon.plist
 /Library/Application Support/IPTime/status.json
 /Library/Application Support/IPTime/check-state.json
+/Library/Application Support/IPTime/region-sync-restore-state.json
 /Library/Application Support/IPTime/original-system-preferences.json
 /Library/Application Support/IPTime/restore-system-preferences.sh
 ~/Library/LaunchAgents/local.iptime.menubar.plist
@@ -197,8 +198,9 @@ or format characters.
 Supported VPN regional mappings:
 
 These mappings are used by the root daemon when the current external IP country
-is recognized. They control the macOS system timezone and safe user regional
-preferences for the active user.
+is recognized. The root daemon controls the macOS system timezone. The
+per-user menu bar LaunchAgent applies safe user regional preferences for the
+active user.
 
 ```text
 PL -> Europe/Warsaw      -> pl_PL  -> metric, Celsius, Monday
@@ -212,7 +214,7 @@ SG -> Asia/Singapore     -> en_SG  -> metric, Celsius, Monday
 CN -> Asia/Shanghai      -> zh_CN  -> metric, Celsius, Monday
 ```
 
-The daemon changes these active-user preferences automatically:
+The menu bar LaunchAgent changes these active-user preferences automatically:
 
 ```text
 AppleLocale
@@ -222,11 +224,11 @@ AppleTemperatureUnit
 AppleFirstWeekday
 ```
 
-Before the first regional change, the daemon stores the original system
-timezone and active-user regional preferences once. Turning off
-`Settings -> Automatic Region Sync` restores those saved values once and stops
-future regional changes. Uninstall runs the same restore scripts before removing
-files.
+Before the first regional change, the root daemon stores the original system
+timezone once, and the menu bar LaunchAgent stores the original active-user
+regional preferences once. Turning off `Settings -> Automatic Region Sync`
+restores those saved values once and stops future regional changes. Uninstall
+runs the same restore scripts before removing files.
 
 App language is intentionally kept English-only. The app, daemon, and installer
 do not change `AppleLanguages`. Set it manually if needed:

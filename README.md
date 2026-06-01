@@ -13,13 +13,17 @@ system time after the VPN-region timezone is applied. A root
 LaunchDaemon checks the external IP region every 10 minutes, and also rechecks
 shortly after macOS reports a network, Wi-Fi, route, or DNS change. As a
 fallback, it compares the current network fingerprint every 5 seconds and
-rechecks when route, DNS, interface, or AirPort state changes. It updates the
-system timezone and safe user regional preferences, then writes status for the
-menu bar app.
+rechecks when route, DNS, interface, assigned IPv4, or router state changes. It
+updates the system timezone and safe user regional preferences, then writes
+status for the menu bar app.
 
 Network-triggered checks are debounced for 5 seconds and run at most once every
 10 seconds. If another network change happens inside that window, the daemon
 delays the recheck instead of dropping it.
+
+The network fingerprint is intentionally narrow: primary interface, primary
+service, router, assigned IPv4 address, and DNS values. This avoids rechecking
+because of noisy AirPort or temporary IPv6 state changes.
 
 Use `Recheck IP Now` from the menu to force an immediate check after connecting
 a VPN manually. While any IP check is running, manual, network-triggered, or

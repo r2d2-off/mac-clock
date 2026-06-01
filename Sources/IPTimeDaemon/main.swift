@@ -301,6 +301,17 @@ private final class Runner {
         return true
     }
 
+    private func cancelImmediateRegionCheckRequest() {
+        immediateCheckLock.lock()
+        immediateRegionCheckAfter = nil
+        immediateCheckLock.unlock()
+    }
+
+    private func refreshNetworkFingerprintBaseline(now: Date) {
+        lastNetworkFingerprintCheck = now
+        lastNetworkFingerprint = currentNetworkFingerprint()
+    }
+
     private func handleManualRecheckRequest(activeUser: ActiveUser?) async -> Bool {
         guard let activeUser else {
             return false
@@ -316,7 +327,11 @@ private final class Runner {
         }
 
         try? FileManager.default.removeItem(at: requestURL)
+        cancelImmediateRegionCheckRequest()
         await runSingleCheck(activeUser: activeUser, trigger: "manual")
+        lastNetworkTriggeredRegionCheck = Date()
+        cancelImmediateRegionCheckRequest()
+        refreshNetworkFingerprintBaseline(now: Date())
         return true
     }
 
@@ -519,17 +534,86 @@ private final class Runner {
     }
 
     private func applyUserRegionalPreferences(rule: RegionRule, activeUser: ActiveUser, errors: inout [String]) {
-        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleLocale", "-string", rule.locale], "AppleLocale", &errors)
-        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleMetricUnits", "-bool", rule.metricUnits ? "true" : "false"], "AppleMetricUnits", &errors)
-        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", rule.measurementUnits], "AppleMeasurementUnits", &errors)
-        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", rule.temperatureUnit], "AppleTemperatureUnit", &errors)
-        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(rule.firstWeekday)], "AppleFirstWeekday", &errors)
+        writeUserDefaultIfNeeded(
+            activeUser,
+            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleLocale"],
+            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleLocale", "-string", rule.locale],
+            expected: .string(rule.locale),
+            label: "AppleLocale",
+            errors: &errors
+        )
+        writeUserDefaultIfNeeded(
+            activeUser,
+            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleMetricUnits"],
+            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleMetricUnits", "-bool", rule.metricUnits ? "true" : "false"],
+            expected: .bool(rule.metricUnits),
+            label: "AppleMetricUnits",
+            errors: &errors
+        )
+        writeUserDefaultIfNeeded(
+            activeUser,
+            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleMeasurementUnits"],
+            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", rule.measurementUnits],
+            expected: .string(rule.measurementUnits),
+            label: "AppleMeasurementUnits",
+            errors: &errors
+        )
+        writeUserDefaultIfNeeded(
+            activeUser,
+            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleTemperatureUnit"],
+            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", rule.temperatureUnit],
+            expected: .string(rule.temperatureUnit),
+            label: "AppleTemperatureUnit",
+            errors: &errors
+        )
+        writeUserDefaultIfNeeded(
+            activeUser,
+            readArguments: ["defaults", "read", "NSGlobalDomain", "AppleFirstWeekday"],
+            writeArguments: ["defaults", "write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(rule.firstWeekday)],
+            expected: .int(rule.firstWeekday),
+            label: "AppleFirstWeekday",
+            errors: &errors
+        )
     }
 
-    private func writeUserDefault(_ activeUser: ActiveUser, _ arguments: [String], _ label: String, _ errors: inout [String]) {
-        let result = runAsUser(activeUser, arguments: arguments)
+    private enum UserDefaultExpectedValue {
+        case string(String)
+        case bool(Bool)
+        case int(Int)
+    }
+
+    private func writeUserDefaultIfNeeded(
+        _ activeUser: ActiveUser,
+        readArguments: [String],
+        writeArguments: [String],
+        expected: UserDefaultExpectedValue,
+        label: String,
+        errors: inout [String]
+    ) {
+        let readResult = runAsUser(activeUser, arguments: readArguments)
+        if readResult.success, userDefaultValue(readResult.message, matches: expected) {
+            return
+        }
+
+        let result = runAsUser(activeUser, arguments: writeArguments)
         if !result.success {
             errors.append("Failed to set \(label): \(result.message)")
+        }
+    }
+
+    private func userDefaultValue(_ value: String, matches expected: UserDefaultExpectedValue) -> Bool {
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch expected {
+        case .string(let expectedValue):
+            return normalizedValue == expectedValue
+        case .bool(let expectedValue):
+            let lowercased = normalizedValue.lowercased()
+            let trueValues = Set(["1", "true", "yes"])
+            let falseValues = Set(["0", "false", "no"])
+            return expectedValue ? trueValues.contains(lowercased) : falseValues.contains(lowercased)
+        case .int(let expectedValue):
+            return Int(normalizedValue) == expectedValue
         }
     }
 
@@ -602,28 +686,71 @@ private func currentNetworkFingerprint() -> String? {
         return nil
     }
 
-    let patterns = [
-        "State:/Network/Global/IPv4",
-        "State:/Network/Global/IPv6",
-        "State:/Network/Global/DNS",
-        "State:/Network/Interface/.*/IPv4",
-        "State:/Network/Interface/.*/IPv6",
-        "State:/Network/Interface/.*/AirPort"
-    ] as CFArray
+    let globalIPv4 = dynamicStoreDictionary(store, key: "State:/Network/Global/IPv4")
+    let globalIPv6 = dynamicStoreDictionary(store, key: "State:/Network/Global/IPv6")
+    let globalDNS = dynamicStoreDictionary(store, key: "State:/Network/Global/DNS")
 
-    guard let values = SCDynamicStoreCopyMultiple(store, nil, patterns) as? [String: Any] else {
+    let primaryInterface = stringValue(globalIPv4["PrimaryInterface"])
+        ?? stringValue(globalIPv6["PrimaryInterface"])
+    let primaryService = stringValue(globalIPv4["PrimaryService"])
+        ?? stringValue(globalIPv6["PrimaryService"])
+    let interfaceIPv4 = primaryInterface.map { dynamicStoreDictionary(store, key: "State:/Network/Interface/\($0)/IPv4") } ?? [:]
+
+    var parts: [String] = []
+    appendFingerprintPart("primaryInterface", primaryInterface, to: &parts)
+    appendFingerprintPart("primaryService", primaryService, to: &parts)
+    appendFingerprintPart("ipv4Router", stringValue(interfaceIPv4["Router"]) ?? stringValue(globalIPv4["Router"]), to: &parts)
+    appendFingerprintPart("ipv4Addresses", stringArray(interfaceIPv4["Addresses"]).sorted(), to: &parts)
+    appendFingerprintPart("dnsServers", stringArray(globalDNS["ServerAddresses"]).sorted(), to: &parts)
+    appendFingerprintPart("dnsDomain", stringValue(globalDNS["DomainName"]), to: &parts)
+    appendFingerprintPart("dnsSearchDomains", stringArray(globalDNS["SearchDomains"]).sorted(), to: &parts)
+    appendFingerprintPart("dnsSupplementalMatchDomains", stringArray(globalDNS["SupplementalMatchDomains"]).sorted(), to: &parts)
+
+    guard !parts.isEmpty else {
         return nil
     }
 
-    let normalized = values.reduce(into: [String: Any]()) { result, item in
-        result[item.key] = item.value
+    return parts.joined(separator: "\n")
+}
+
+private func dynamicStoreDictionary(_ store: SCDynamicStore, key: String) -> [String: Any] {
+    SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any] ?? [:]
+}
+
+private func appendFingerprintPart(_ key: String, _ value: String?, to parts: inout [String]) {
+    guard let value = normalized(value) else {
+        return
     }
 
-    guard let data = try? PropertyListSerialization.data(fromPropertyList: normalized, format: .binary, options: 0) else {
-        return normalized.keys.sorted().map { "\($0)=\(String(describing: normalized[$0]!))" }.joined(separator: "\n")
+    parts.append("\(key)=\(value)")
+}
+
+private func appendFingerprintPart(_ key: String, _ values: [String], to parts: inout [String]) {
+    guard !values.isEmpty else {
+        return
     }
 
-    return data.base64EncodedString()
+    parts.append("\(key)=\(values.joined(separator: ","))")
+}
+
+private func stringValue(_ value: Any?) -> String? {
+    value as? String
+}
+
+private func stringArray(_ value: Any?) -> [String] {
+    if let values = value as? [String] {
+        return values.compactMap(normalized)
+    }
+
+    if let values = value as? [Any] {
+        return values.compactMap { normalized($0 as? String) }
+    }
+
+    if let value = value as? String {
+        return [value].compactMap(normalized)
+    }
+
+    return []
 }
 
 private func fetchDecodable<T: Decodable>(_ type: T.Type, from url: URL) async throws -> T {

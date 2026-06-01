@@ -3,6 +3,16 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.31 - 2026-06-01
+
+- Reduced noisy automatic IP rechecks by replacing the raw macOS network
+  dictionary fingerprint with a compact fingerprint of primary interface,
+  service, router, assigned IPv4 address, and DNS values.
+- Manual `Recheck IP Now` now cancels pending network-triggered rechecks and
+  refreshes the network fingerprint baseline after the manual check completes.
+- Regional user preferences are now written only when the current value differs
+  from the desired region value.
+
 ## v0.1.30 - 2026-06-01
 
 - Added Bangkok (`Asia/Bangkok`, Thailand) to `Settings -> Home Clock -> Presets`.

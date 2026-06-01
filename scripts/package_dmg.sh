@@ -27,6 +27,15 @@ PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 AGENT_LABEL="local.iptime.menubar"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 USER_SUPPORT_DIR="$HOME/Library/Application Support/IPTime"
+SYSTEM_LOGS=(
+    "/Library/Logs/IPTimeDaemon.out.log"
+    "/Library/Logs/IPTimeDaemon.err.log"
+    "/Library/Logs/IPTimeInstaller.log"
+)
+USER_LOGS=(
+    "$HOME/Library/Logs/IPTimeMenuBar.out.log"
+    "$HOME/Library/Logs/IPTimeMenuBar.err.log"
+)
 SYSTEM_RESTORE_SCRIPT="$SUPPORT_DIR/restore-system-preferences.sh"
 USER_RESTORE_SCRIPT="$USER_SUPPORT_DIR/restore-user-preferences.sh"
 
@@ -51,10 +60,12 @@ sudo rm -f "$DAEMON_DEST"
 sudo rm -rf "$APP_DEST"
 sudo rm -rf "$SUPPORT_DIR"
 rm -rf "$USER_SUPPORT_DIR"
+sudo rm -f "${SYSTEM_LOGS[@]}"
+rm -f "${USER_LOGS[@]}"
 
 echo
 echo "Uninstalled IP Time."
-echo "Restored saved preferences and removed status/config/backup files."
+echo "Restored saved preferences and removed status/config/backup/log files."
 
 if [ -t 0 ]; then
     echo

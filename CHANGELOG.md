@@ -5,6 +5,11 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.35 - 2026-06-02
+
+- Updated source and DMG uninstall flows to remove IP Time log files during
+  full cleanup.
+
 ## v0.1.34 - 2026-06-02
 
 - Added one-time backups for the original system timezone and active-user

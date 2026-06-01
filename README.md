@@ -142,9 +142,9 @@ The zip is built for the current Mac architecture, for example `arm64`.
 ```
 
 By default this restores saved macOS preferences and removes app, daemon,
-LaunchAgent, LaunchDaemon, status, config, and backup files.
+LaunchAgent, LaunchDaemon, status, config, backup, and log files.
 
-To keep status, config, and backup files:
+To keep status, config, backup, and log files:
 
 ```sh
 ./scripts/uninstall.sh --keep-data
@@ -181,6 +181,11 @@ daemon binary so future self-updates can restart cleanly.
 ~/Library/Application Support/IPTime/recheck-request.json
 ~/Library/Application Support/IPTime/update-request.json
 ~/Library/Application Support/IPTime/update-result.json
+/Library/Logs/IPTimeDaemon.out.log
+/Library/Logs/IPTimeDaemon.err.log
+/Library/Logs/IPTimeInstaller.log
+~/Library/Logs/IPTimeMenuBar.out.log
+~/Library/Logs/IPTimeMenuBar.err.log
 ```
 
 ## IP And Locale Rules

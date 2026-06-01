@@ -9,6 +9,15 @@ LABEL="local.iptime.daemon"
 AGENT_LABEL="local.iptime.menubar"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 USER_SUPPORT_DIR="$HOME/Library/Application Support/IPTime"
+SYSTEM_LOGS=(
+    "/Library/Logs/IPTimeDaemon.out.log"
+    "/Library/Logs/IPTimeDaemon.err.log"
+    "/Library/Logs/IPTimeInstaller.log"
+)
+USER_LOGS=(
+    "$HOME/Library/Logs/IPTimeMenuBar.out.log"
+    "$HOME/Library/Logs/IPTimeMenuBar.err.log"
+)
 SYSTEM_RESTORE_SCRIPT="$SUPPORT_DIR/restore-system-preferences.sh"
 USER_RESTORE_SCRIPT="$USER_SUPPORT_DIR/restore-user-preferences.sh"
 KEEP_DATA=0
@@ -19,7 +28,7 @@ usage() {
 Usage: ./scripts/uninstall.sh [--keep-data] [--no-restore]
 
 By default this restores saved macOS preferences and removes all IP Time files.
---keep-data    Keep status/config/backup files under Application Support.
+--keep-data    Keep status/config/backup files and logs.
 --no-restore   Remove IP Time without restoring saved macOS preferences.
 --purge        Accepted for compatibility; full cleanup is now the default.
 TEXT
@@ -70,11 +79,13 @@ sudo rm -rf "$APP_DEST"
 if [[ "$KEEP_DATA" == "0" ]]; then
     sudo rm -rf "$SUPPORT_DIR"
     rm -rf "$USER_SUPPORT_DIR"
+    sudo rm -f "${SYSTEM_LOGS[@]}"
+    rm -f "${USER_LOGS[@]}"
 fi
 
 echo "Uninstalled IP Time."
 if [[ "$KEEP_DATA" == "1" ]]; then
-    echo "Status/config/backup files were kept."
+    echo "Status/config/backup/log files were kept."
 else
-    echo "Removed status/config/backup files."
+    echo "Removed status/config/backup/log files."
 fi

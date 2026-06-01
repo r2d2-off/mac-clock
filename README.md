@@ -23,6 +23,8 @@ app writes an update request and shows update progress while the root
 LaunchDaemon downloads the release zip and replaces the installed app and daemon
 without another installer prompt.
 
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## Install From Source
 
 On a new Mac:

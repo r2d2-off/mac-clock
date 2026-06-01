@@ -8,20 +8,73 @@ PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 LABEL="local.iptime.daemon"
 AGENT_LABEL="local.iptime.menubar"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+USER_SUPPORT_DIR="$HOME/Library/Application Support/IPTime"
+SYSTEM_RESTORE_SCRIPT="$SUPPORT_DIR/restore-system-preferences.sh"
+USER_RESTORE_SCRIPT="$USER_SUPPORT_DIR/restore-user-preferences.sh"
+KEEP_DATA=0
+RESTORE_PREFS=1
+
+usage() {
+    cat <<'TEXT'
+Usage: ./scripts/uninstall.sh [--keep-data] [--no-restore]
+
+By default this restores saved macOS preferences and removes all IP Time files.
+--keep-data    Keep status/config/backup files under Application Support.
+--no-restore   Remove IP Time without restoring saved macOS preferences.
+--purge        Accepted for compatibility; full cleanup is now the default.
+TEXT
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --keep-data)
+            KEEP_DATA=1
+            ;;
+        --no-restore)
+            RESTORE_PREFS=0
+            ;;
+        --purge)
+            KEEP_DATA=0
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $arg" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 killall DualTimeMenuBar >/dev/null 2>&1 || true
 launchctl bootout "gui/$(id -u)" "$AGENT_PLIST" >/dev/null 2>&1 || true
-rm -f "$AGENT_PLIST"
-
 sudo launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+
+if [[ "$RESTORE_PREFS" == "1" ]]; then
+    if [[ -f "$USER_RESTORE_SCRIPT" ]]; then
+        /bin/sh "$USER_RESTORE_SCRIPT" || true
+    fi
+
+    if [[ -f "$SYSTEM_RESTORE_SCRIPT" ]]; then
+        sudo /bin/sh "$SYSTEM_RESTORE_SCRIPT" || true
+    fi
+fi
+
+rm -f "$AGENT_PLIST"
 sudo rm -f "$PLIST"
 sudo rm -f "$DAEMON_DEST"
 sudo rm -rf "$APP_DEST"
 
-if [[ "${1:-}" == "--purge" ]]; then
+if [[ "$KEEP_DATA" == "0" ]]; then
     sudo rm -rf "$SUPPORT_DIR"
-    rm -rf "$HOME/Library/Application Support/IPTime"
+    rm -rf "$USER_SUPPORT_DIR"
 fi
 
 echo "Uninstalled IP Time."
-echo "Status/config files were kept unless you passed --purge."
+if [[ "$KEEP_DATA" == "1" ]]; then
+    echo "Status/config/backup files were kept."
+else
+    echo "Removed status/config/backup files."
+fi

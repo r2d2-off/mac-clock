@@ -7,6 +7,10 @@ private let defaultStatusPath = "/Library/Application Support/IPTime/status.json
 private let statusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["IPTIME_STATUS_PATH"] ?? defaultStatusPath)
 private let supportDirectoryURL = statusURL.deletingLastPathComponent()
 private let regionCheckStateURL = supportDirectoryURL.appendingPathComponent("check-state.json")
+private let systemPreferenceBackupURL = supportDirectoryURL.appendingPathComponent("original-system-preferences.json")
+private let systemPreferenceRestoreScriptURL = supportDirectoryURL.appendingPathComponent("restore-system-preferences.sh")
+private let userPreferenceBackupFileName = "original-user-preferences.json"
+private let userPreferenceRestoreScriptFileName = "restore-user-preferences.sh"
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let defaultRegionCheckInterval: TimeInterval = 600
@@ -16,6 +20,14 @@ private let networkChangeDebounceInterval: TimeInterval = 5
 private let networkChangeMinimumCheckInterval: TimeInterval = 10
 private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
 private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
+private let userPreferenceKeysToBackup = [
+    "AppleLanguages",
+    "AppleLocale",
+    "AppleMetricUnits",
+    "AppleMeasurementUnits",
+    "AppleTemperatureUnit",
+    "AppleFirstWeekday"
+]
 
 private struct IPInfoResponse: Decodable {
     let status: String?
@@ -137,6 +149,54 @@ private struct RegionCheckState: Encodable {
 
 private struct IPTimeConfig: Decodable {
     let regionCheckIntervalSeconds: Int
+    let regionSyncEnabled: Bool?
+}
+
+private struct SystemPreferenceBackup: Encodable {
+    let createdAt: String
+    let timeZone: String?
+}
+
+private struct UserPreferenceBackup: Encodable {
+    let createdAt: String
+    let user: String
+    let preferences: [String: UserPreferenceBackupValue]
+}
+
+private struct UserPreferenceBackupValue: Encodable {
+    enum Kind: String, Encodable {
+        case missing
+        case string
+        case bool
+        case int
+        case stringArray
+    }
+
+    let kind: Kind
+    let stringValue: String?
+    let boolValue: Bool?
+    let intValue: Int?
+    let stringArrayValue: [String]?
+
+    static func missing() -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .missing, stringValue: nil, boolValue: nil, intValue: nil, stringArrayValue: nil)
+    }
+
+    static func string(_ value: String) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .string, stringValue: value, boolValue: nil, intValue: nil, stringArrayValue: nil)
+    }
+
+    static func bool(_ value: Bool) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .bool, stringValue: nil, boolValue: value, intValue: nil, stringArrayValue: nil)
+    }
+
+    static func int(_ value: Int) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .int, stringValue: nil, boolValue: nil, intValue: value, stringArrayValue: nil)
+    }
+
+    static func stringArray(_ value: [String]) -> UserPreferenceBackupValue {
+        UserPreferenceBackupValue(kind: .stringArray, stringValue: nil, boolValue: nil, intValue: nil, stringArrayValue: value)
+    }
 }
 
 private final class NetworkChangeMonitor {
@@ -356,11 +416,27 @@ private final class Runner {
         return TimeInterval(config.regionCheckIntervalSeconds)
     }
 
+    private func isRegionSyncEnabled(activeUser: ActiveUser?) -> Bool {
+        guard let activeUser,
+              let data = try? Data(contentsOf: configURL(for: activeUser)),
+              let config = try? JSONDecoder().decode(IPTimeConfig.self, from: data) else {
+            return true
+        }
+
+        return config.regionSyncEnabled ?? true
+    }
+
     private func runSingleCheck(activeUser: ActiveUser?, trigger: String) async {
         let startedAt = timestamp()
         writeRegionCheckState(startedAt: startedAt, completedAt: nil, trigger: trigger)
         defer {
             writeRegionCheckState(startedAt: startedAt, completedAt: timestamp(), trigger: trigger)
+        }
+
+        guard isRegionSyncEnabled(activeUser: activeUser) else {
+            let error = restoreOriginalPreferences(activeUser: activeUser)
+            writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error)
+            return
         }
 
         do {
@@ -516,9 +592,15 @@ private final class Runner {
             return ApplyResult(locale: nil, rule: nil, error: "No regional rule for country \(country); system not changed")
         }
 
+        var errors: [String] = []
+        guard backupSystemPreferencesIfNeeded(errors: &errors) else {
+            return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
+        }
+
         let timeZoneResult = applyTimeZoneIfNeeded(info.timezone)
         if let error = timeZoneResult {
-            return ApplyResult(locale: nil, rule: nil, error: error)
+            errors.append(error)
+            return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
         }
 
         guard let activeUser else {
@@ -529,10 +611,104 @@ private final class Runner {
             return ApplyResult(locale: rule.locale, rule: rule, error: nil)
         }
 
-        var errors: [String] = []
+        guard backupUserPreferencesIfNeeded(activeUser, errors: &errors) else {
+            return ApplyResult(locale: rule.locale, rule: rule, error: errors.joined(separator: "; "))
+        }
+
         applyUserRegionalPreferences(rule: rule, activeUser: activeUser, errors: &errors)
 
         return ApplyResult(locale: rule.locale, rule: rule, error: errors.isEmpty ? nil : errors.joined(separator: "; "))
+    }
+
+    private func backupSystemPreferencesIfNeeded(errors: inout [String]) -> Bool {
+        guard !isDryRun else {
+            return true
+        }
+
+        if FileManager.default.fileExists(atPath: systemPreferenceBackupURL.path) {
+            return true
+        }
+
+        let timeZoneResult = runProcess(path: "/usr/sbin/systemsetup", arguments: ["-gettimezone"])
+        let timeZone = parseSystemSetupTimeZone(timeZoneResult.message) ?? TimeZone.autoupdatingCurrent.identifier
+        let backup = SystemPreferenceBackup(createdAt: timestamp(), timeZone: timeZone)
+
+        do {
+            try FileManager.default.createDirectory(at: supportDirectoryURL, withIntermediateDirectories: true)
+            try writeJSON(backup, to: systemPreferenceBackupURL)
+            try systemPreferenceRestoreScript(timeZone: timeZone).data(using: .utf8)?.write(to: systemPreferenceRestoreScriptURL, options: .atomic)
+            _ = runProcess(path: "/usr/sbin/chown", arguments: ["root:wheel", systemPreferenceBackupURL.path, systemPreferenceRestoreScriptURL.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["600", systemPreferenceBackupURL.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["700", systemPreferenceRestoreScriptURL.path])
+            return true
+        } catch {
+            errors.append("Failed to save original system preferences: \(error.localizedDescription); system not changed")
+            return false
+        }
+    }
+
+    private func backupUserPreferencesIfNeeded(_ activeUser: ActiveUser, errors: inout [String]) -> Bool {
+        guard !isDryRun else {
+            return true
+        }
+
+        let backupURL = userPreferenceBackupURL(for: activeUser)
+        if FileManager.default.fileExists(atPath: backupURL.path) {
+            return true
+        }
+
+        let exportResult = runAsUser(activeUser, arguments: ["defaults", "export", "NSGlobalDomain", "-"])
+        guard exportResult.success,
+              let data = exportResult.message.data(using: .utf8),
+              let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let globalDomain = propertyList as? [String: Any] else {
+            errors.append("Failed to save original user preferences; user regional preferences not changed")
+            return false
+        }
+
+        let preferences = Dictionary(uniqueKeysWithValues: userPreferenceKeysToBackup.map { key in
+            (key, userPreferenceBackupValue(from: globalDomain[key]))
+        })
+        let backup = UserPreferenceBackup(createdAt: timestamp(), user: activeUser.name, preferences: preferences)
+        let directory = userSupportDirectoryURL(for: activeUser)
+        let restoreScriptURL = userPreferenceRestoreScriptURL(for: activeUser)
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try writeJSON(backup, to: backupURL)
+            try userPreferenceRestoreScript(preferences: preferences).data(using: .utf8)?.write(to: restoreScriptURL, options: .atomic)
+            _ = runProcess(path: "/usr/sbin/chown", arguments: ["-R", activeUser.name, directory.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["700", directory.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["600", backupURL.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["700", restoreScriptURL.path])
+            return true
+        } catch {
+            errors.append("Failed to save original user preferences: \(error.localizedDescription); user regional preferences not changed")
+            return false
+        }
+    }
+
+    private func restoreOriginalPreferences(activeUser: ActiveUser?) -> String? {
+        var errors: [String] = []
+
+        if let activeUser {
+            let restoreScriptURL = userPreferenceRestoreScriptURL(for: activeUser)
+            if FileManager.default.fileExists(atPath: restoreScriptURL.path) {
+                let result = runAsUser(activeUser, executablePath: "/bin/sh", arguments: [restoreScriptURL.path])
+                if !result.success {
+                    errors.append("Failed to restore user preferences: \(result.message)")
+                }
+            }
+        }
+
+        if FileManager.default.fileExists(atPath: systemPreferenceRestoreScriptURL.path) {
+            let result = runProcess(path: "/bin/sh", arguments: [systemPreferenceRestoreScriptURL.path])
+            if !result.success {
+                errors.append("Failed to restore system preferences: \(result.message)")
+            }
+        }
+
+        return errors.isEmpty ? nil : errors.joined(separator: "; ")
     }
 
     private func applyUserRegionalPreferences(rule: RegionRule, activeUser: ActiveUser, errors: inout [String]) {
@@ -904,30 +1080,43 @@ private func parseHomeDirectory(_ dsclOutput: String) -> String? {
 }
 
 private func runAsUser(_ user: ActiveUser, arguments: [String]) -> (success: Bool, message: String) {
+    runAsUser(user, executablePath: "/usr/bin/\(arguments[0])", arguments: Array(arguments.dropFirst()))
+}
+
+private func runAsUser(_ user: ActiveUser, executablePath: String, arguments: [String]) -> (success: Bool, message: String) {
     runProcess(
         path: "/bin/launchctl",
-        arguments: ["asuser", user.uid, "/usr/bin/sudo", "-u", user.name, "/usr/bin/env", "HOME=\(user.home)", "/usr/bin/\(arguments[0])"] + Array(arguments.dropFirst())
+        arguments: ["asuser", user.uid, "/usr/bin/sudo", "-u", user.name, "/usr/bin/env", "HOME=\(user.home)", executablePath] + arguments
     )
 }
 
-private func updateRequestURL(for user: ActiveUser) -> URL {
+private func userSupportDirectoryURL(for user: ActiveUser) -> URL {
     URL(fileURLWithPath: user.home, isDirectory: true)
-        .appendingPathComponent("Library/Application Support/IPTime/update-request.json")
+        .appendingPathComponent("Library/Application Support/IPTime", isDirectory: true)
+}
+
+private func userPreferenceBackupURL(for user: ActiveUser) -> URL {
+    userSupportDirectoryURL(for: user).appendingPathComponent(userPreferenceBackupFileName)
+}
+
+private func userPreferenceRestoreScriptURL(for user: ActiveUser) -> URL {
+    userSupportDirectoryURL(for: user).appendingPathComponent(userPreferenceRestoreScriptFileName)
+}
+
+private func updateRequestURL(for user: ActiveUser) -> URL {
+    userSupportDirectoryURL(for: user).appendingPathComponent("update-request.json")
 }
 
 private func updateResultURL(for user: ActiveUser) -> URL {
-    URL(fileURLWithPath: user.home, isDirectory: true)
-        .appendingPathComponent("Library/Application Support/IPTime/update-result.json")
+    userSupportDirectoryURL(for: user).appendingPathComponent("update-result.json")
 }
 
 private func recheckRequestURL(for user: ActiveUser) -> URL {
-    URL(fileURLWithPath: user.home, isDirectory: true)
-        .appendingPathComponent("Library/Application Support/IPTime/recheck-request.json")
+    userSupportDirectoryURL(for: user).appendingPathComponent("recheck-request.json")
 }
 
 private func configURL(for user: ActiveUser) -> URL {
-    URL(fileURLWithPath: user.home, isDirectory: true)
-        .appendingPathComponent("Library/Application Support/IPTime/config.json")
+    userSupportDirectoryURL(for: user).appendingPathComponent("config.json")
 }
 
 private var updateAssetName: String {
@@ -1031,6 +1220,118 @@ private func writeUpdateResult(activeUser: ActiveUser, version: String, status: 
     } catch {
         FileHandle.standardError.write(Data("Failed to write update result: \(error.localizedDescription)\n".utf8))
     }
+}
+
+private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(value).write(to: url, options: .atomic)
+}
+
+private func parseSystemSetupTimeZone(_ output: String) -> String? {
+    let prefix = "Time Zone:"
+    guard let line = output.split(separator: "\n").map(String.init).first(where: { $0.hasPrefix(prefix) }) else {
+        return nil
+    }
+
+    let value = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+}
+
+private func systemPreferenceRestoreScript(timeZone: String?) -> String {
+    var lines = [
+        "#!/bin/sh",
+        "set +e"
+    ]
+
+    if let timeZone, !timeZone.isEmpty {
+        lines.append("/usr/sbin/systemsetup -settimezone \(shellQuoted(timeZone)) >/dev/null 2>&1 || true")
+    }
+
+    lines.append("exit 0")
+    return lines.joined(separator: "\n") + "\n"
+}
+
+private func userPreferenceBackupValue(from value: Any?) -> UserPreferenceBackupValue {
+    guard let value else {
+        return .missing()
+    }
+
+    if let stringArray = value as? [String] {
+        return .stringArray(stringArray)
+    }
+
+    if let array = value as? [Any] {
+        let strings = array.compactMap { $0 as? String }
+        if strings.count == array.count {
+            return .stringArray(strings)
+        }
+    }
+
+    if let stringValue = value as? String {
+        return .string(stringValue)
+    }
+
+    if let boolValue = value as? Bool {
+        return .bool(boolValue)
+    }
+
+    if let numberValue = value as? NSNumber {
+        if CFGetTypeID(numberValue) == CFBooleanGetTypeID() {
+            return .bool(numberValue.boolValue)
+        }
+
+        return .int(numberValue.intValue)
+    }
+
+    if let intValue = value as? Int {
+        return .int(intValue)
+    }
+
+    return .missing()
+}
+
+private func userPreferenceRestoreScript(preferences: [String: UserPreferenceBackupValue]) -> String {
+    var lines = [
+        "#!/bin/sh",
+        "set +e"
+    ]
+
+    for key in userPreferenceKeysToBackup {
+        guard let value = preferences[key] else {
+            continue
+        }
+
+        switch value.kind {
+        case .missing:
+            lines.append("/usr/bin/defaults delete NSGlobalDomain \(shellQuoted(key)) >/dev/null 2>&1 || true")
+        case .string:
+            guard let stringValue = value.stringValue else {
+                continue
+            }
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -string \(shellQuoted(stringValue)) >/dev/null 2>&1 || true")
+        case .bool:
+            guard let boolValue = value.boolValue else {
+                continue
+            }
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -bool \(boolValue ? "true" : "false") >/dev/null 2>&1 || true")
+        case .int:
+            guard let intValue = value.intValue else {
+                continue
+            }
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -int \(intValue) >/dev/null 2>&1 || true")
+        case .stringArray:
+            guard let stringArrayValue = value.stringArrayValue else {
+                continue
+            }
+            let values = stringArrayValue.map(shellQuoted).joined(separator: " ")
+            lines.append("/usr/bin/defaults write NSGlobalDomain \(shellQuoted(key)) -array \(values) >/dev/null 2>&1 || true")
+        }
+    }
+
+    lines.append("/usr/bin/killall cfprefsd >/dev/null 2>&1 || true")
+    lines.append("exit 0")
+    return lines.joined(separator: "\n") + "\n"
 }
 
 private func runOrThrow(path: String, arguments: [String]) throws {

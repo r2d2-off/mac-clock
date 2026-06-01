@@ -141,10 +141,13 @@ The zip is built for the current Mac architecture, for example `arm64`.
 ./scripts/uninstall.sh
 ```
 
-To remove status and user config too:
+By default this restores saved macOS preferences and removes app, daemon,
+LaunchAgent, LaunchDaemon, status, config, and backup files.
+
+To keep status, config, and backup files:
 
 ```sh
-./scripts/uninstall.sh --purge
+./scripts/uninstall.sh --keep-data
 ```
 
 ## Troubleshooting
@@ -167,8 +170,12 @@ daemon binary so future self-updates can restart cleanly.
 /Library/LaunchDaemons/local.iptime.daemon.plist
 /Library/Application Support/IPTime/status.json
 /Library/Application Support/IPTime/check-state.json
+/Library/Application Support/IPTime/original-system-preferences.json
+/Library/Application Support/IPTime/restore-system-preferences.sh
 ~/Library/LaunchAgents/local.iptime.menubar.plist
 ~/Library/Application Support/IPTime/config.json
+~/Library/Application Support/IPTime/original-user-preferences.json
+~/Library/Application Support/IPTime/restore-user-preferences.sh
 ~/Library/Application Support/IPTime/recheck-request.json
 ~/Library/Application Support/IPTime/update-request.json
 ~/Library/Application Support/IPTime/update-result.json
@@ -214,10 +221,13 @@ AppleTemperatureUnit
 AppleFirstWeekday
 ```
 
-App language is intentionally kept English-only. The daemon does not change
-`AppleLanguages`. The pkg installer sets `AppleLanguages` to English once for
-the active user; source and zip installs leave it unchanged. Set it manually if
-needed:
+Before the first regional change, the daemon stores the original system
+timezone and active-user regional preferences once. Turning off
+`Settings -> Automatic Region Sync` restores those saved values and stops future
+regional changes. Uninstall runs the same restore scripts before removing files.
+
+App language is intentionally kept English-only. The app, daemon, and installer
+do not change `AppleLanguages`. Set it manually if needed:
 
 ```sh
 defaults write NSGlobalDomain AppleLanguages -array "en-US"

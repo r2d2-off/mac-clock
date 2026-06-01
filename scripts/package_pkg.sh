@@ -142,7 +142,6 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" 
 PLIST
         /usr/sbin/chown "$CONSOLE_USER" "$AGENT_DIR" "$AGENT_PLIST" "$USER_HOME/Library/Logs" >/dev/null 2>&1 || true
         /bin/chmod 644 "$AGENT_PLIST" >/dev/null 2>&1 || true
-        /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/defaults write NSGlobalDomain AppleLanguages -array "en-US" >/dev/null 2>&1 || true
         /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "$APP_DEST" >/dev/null 2>&1 || true
     fi
 fi

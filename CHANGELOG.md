@@ -5,6 +5,13 @@ on GitHub Releases.
 
 ## Unreleased
 
+- Added one-time backups for the original system timezone and active-user
+  regional preferences before the daemon applies regional changes.
+- Added `Settings -> Automatic Region Sync`; turning it off restores saved
+  preferences and stops future automatic timezone/locale changes.
+- Updated source and DMG uninstall flows to restore saved preferences before
+  removing IP Time files, with full support-data cleanup as the default.
+- Removed the pkg installer's one-time `AppleLanguages=en-US` write.
 - Clarified the README distinction between VPN regional mappings and Home Clock
   presets, and listed the current Home Clock presets.
 

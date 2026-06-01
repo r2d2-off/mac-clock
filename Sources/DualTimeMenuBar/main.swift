@@ -164,6 +164,13 @@ private struct RegionCheckState: Codable {
 private struct IPTimeConfig: Codable {
     let regionCheckIntervalSeconds: Int
     let homeClock: HomeClockConfig?
+    let regionSyncEnabled: Bool?
+
+    init(regionCheckIntervalSeconds: Int, homeClock: HomeClockConfig?, regionSyncEnabled: Bool? = true) {
+        self.regionCheckIntervalSeconds = regionCheckIntervalSeconds
+        self.homeClock = homeClock
+        self.regionSyncEnabled = regionSyncEnabled
+    }
 }
 
 private struct HomeClockOption {
@@ -372,6 +379,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return statusReadError
     }
 
+    private var regionSyncEnabled: Bool {
+        config.regionSyncEnabled ?? true
+    }
+
     private var hasIPLookupError: Bool {
         status?.error != nil && nonEmpty(status?.ip) == nil
     }
@@ -408,14 +419,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(settingsURL)
     }
 
+    private func requestRegionCheck() throws -> Date {
+        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+        let requestedAt = Date()
+        let request = RecheckRequest(requestedAt: timestamp(requestedAt))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(request).write(to: recheckRequestURL, options: .atomic)
+        return requestedAt
+    }
+
     @objc private func recheckIPNow() {
         do {
-            try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
-            let requestedAt = Date()
-            let request = RecheckRequest(requestedAt: timestamp(requestedAt))
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(request).write(to: recheckRequestURL, options: .atomic)
+            let requestedAt = try requestRegionCheck()
             manualRecheckRequestedAt = requestedAt
             manualRecheckError = nil
             updateStatusTitle()
@@ -426,6 +442,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
     }
 
+    @objc private func toggleRegionSync(_ sender: NSMenuItem) {
+        let enabled = !regionSyncEnabled
+        config = IPTimeConfig(
+            regionCheckIntervalSeconds: normalizedRegionCheckInterval(config.regionCheckIntervalSeconds),
+            homeClock: normalizedHomeClock(config.homeClock),
+            regionSyncEnabled: enabled
+        )
+
+        do {
+            try writeConfig()
+            _ = try requestRegionCheck()
+            manualRecheckError = nil
+        } catch {
+            manualRecheckError = "Failed to save settings: \(error.localizedDescription)"
+        }
+
+        sender.state = enabled ? .on : .off
+        buildMenu()
+        updateStatusTitle()
+    }
+
     @objc private func setRegionCheckInterval(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Int else {
             return
@@ -433,7 +470,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(seconds),
-            homeClock: normalizedHomeClock(config.homeClock)
+            homeClock: normalizedHomeClock(config.homeClock),
+            regionSyncEnabled: regionSyncEnabled
         )
         do {
             try writeConfig()
@@ -453,7 +491,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(config.regionCheckIntervalSeconds),
-            homeClock: normalizedHomeClock(homeClock)
+            homeClock: normalizedHomeClock(homeClock),
+            regionSyncEnabled: regionSyncEnabled
         )
 
         do {
@@ -563,7 +602,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(decoded.regionCheckIntervalSeconds),
-            homeClock: normalizedHomeClock(decoded.homeClock)
+            homeClock: normalizedHomeClock(decoded.homeClock),
+            regionSyncEnabled: decoded.regionSyncEnabled ?? true
         )
     }
 
@@ -847,6 +887,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        let regionSync = NSMenuItem(title: "Automatic Region Sync", action: #selector(toggleRegionSync(_:)), keyEquivalent: "")
+        regionSync.target = self
+        regionSync.state = regionSyncEnabled ? .on : .off
+        menu.addItem(regionSync)
+
+        menu.addItem(.separator())
+
         let intervalMenuItem = NSMenuItem(title: "IP Check Interval", action: nil, keyEquivalent: "")
         let intervalMenu = NSMenu()
 
@@ -950,7 +997,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func detailRows() -> [String] {
         var rows: [String] = [
-            "Managed by LaunchDaemon every \(intervalLabel(config.regionCheckIntervalSeconds))",
+            regionSyncEnabled ? "Managed by LaunchDaemon every \(intervalLabel(config.regionCheckIntervalSeconds))" : "Region sync: off",
             "Home clock: \(homeClockDescription())"
         ]
 
@@ -1167,14 +1214,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             StatusSegment(
                 flag: flag(for: countryCode),
                 primary: localText,
-                detail: ipLabel,
+                detail: regionSyncEnabled ? ipLabel : "sync off",
                 detailFirst: false,
-                isError: displayedError != nil,
+                isError: regionSyncEnabled && displayedError != nil,
                 activity: ipActivityIndicator
             )
         ]
 
-        if hasIPLookupError {
+        if regionSyncEnabled && hasIPLookupError {
             segments[1] = StatusSegment(
                 flag: "",
                 primary: "[ ip-api.com error ]",

@@ -26,21 +26,35 @@ SUPPORT_DIR="/Library/Application Support/IPTime"
 PLIST="/Library/LaunchDaemons/local.iptime.daemon.plist"
 AGENT_LABEL="local.iptime.menubar"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+USER_SUPPORT_DIR="$HOME/Library/Application Support/IPTime"
+SYSTEM_RESTORE_SCRIPT="$SUPPORT_DIR/restore-system-preferences.sh"
+USER_RESTORE_SCRIPT="$USER_SUPPORT_DIR/restore-user-preferences.sh"
 
 echo "Uninstalling IP Time..."
 echo "You may be asked for your macOS administrator password."
 
 killall DualTimeMenuBar >/dev/null 2>&1 || true
 launchctl bootout "gui/$(id -u)" "$AGENT_PLIST" >/dev/null 2>&1 || true
-rm -f "$AGENT_PLIST"
 sudo launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+
+if [ -f "$USER_RESTORE_SCRIPT" ]; then
+    /bin/sh "$USER_RESTORE_SCRIPT" || true
+fi
+
+if [ -f "$SYSTEM_RESTORE_SCRIPT" ]; then
+    sudo /bin/sh "$SYSTEM_RESTORE_SCRIPT" || true
+fi
+
+rm -f "$AGENT_PLIST"
 sudo rm -f "$PLIST"
 sudo rm -f "$DAEMON_DEST"
 sudo rm -rf "$APP_DEST"
+sudo rm -rf "$SUPPORT_DIR"
+rm -rf "$USER_SUPPORT_DIR"
 
 echo
 echo "Uninstalled IP Time."
-echo "Status file kept at: $SUPPORT_DIR/status.json"
+echo "Restored saved preferences and removed status/config/backup files."
 
 if [ -t 0 ]; then
     echo
@@ -62,7 +76,8 @@ Installed files:
   /usr/local/libexec/iptime-daemon
   /Library/LaunchDaemons/local.iptime.daemon.plist
   ~/Library/LaunchAgents/local.iptime.menubar.plist
-  /Library/Application Support/IPTime/status.json
+  /Library/Application Support/IPTime
+  ~/Library/Application Support/IPTime
 
 After installation, the menu bar item starts automatically at login.
 TEXT

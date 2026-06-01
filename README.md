@@ -9,9 +9,11 @@ macOS menu bar clock for VPN work:
 The first segment is always Moscow time (`Europe/Moscow`). The second segment
 is the current system time after the VPN-region timezone is applied. A root
 LaunchDaemon checks the external IP region every 10 minutes, and also rechecks
-shortly after macOS reports a network, Wi-Fi, route, or DNS change. It updates
-the system timezone and safe user regional preferences, then writes status for
-the menu bar app.
+shortly after macOS reports a network, Wi-Fi, route, or DNS change. As a
+fallback, it compares the current network fingerprint every 5 seconds and
+rechecks when route, DNS, interface, or AirPort state changes. It updates the
+system timezone and safe user regional preferences, then writes status for the
+menu bar app.
 
 If something fails, the VPN/IP segment turns red and the error is shown in the
 menu.

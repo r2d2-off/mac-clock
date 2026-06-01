@@ -8,6 +8,7 @@ private let supportDirectoryURL = statusURL.deletingLastPathComponent()
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let regionCheckInterval: TimeInterval = 600
+private let networkFingerprintPollInterval: TimeInterval = 5
 private let networkChangeDebounceInterval: TimeInterval = 5
 private let networkChangeMinimumCheckInterval: TimeInterval = 30
 private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
@@ -195,6 +196,8 @@ private final class Runner {
     private let immediateCheckLock = NSLock()
     private var immediateRegionCheckAfter: Date?
     private var lastNetworkTriggeredRegionCheck = Date.distantPast
+    private var lastNetworkFingerprintCheck = Date.distantPast
+    private var lastNetworkFingerprint: String?
     private var networkMonitor: NetworkChangeMonitor?
 
     func run() async {
@@ -218,6 +221,8 @@ private final class Runner {
             let activeUser = findActiveUser()
             let now = Date()
 
+            pollNetworkFingerprint(now: now)
+
             if consumeImmediateRegionCheckRequest(now: now) {
                 await runSingleCheck(activeUser: activeUser)
                 lastRegionCheck = Date()
@@ -237,6 +242,23 @@ private final class Runner {
         immediateCheckLock.lock()
         immediateRegionCheckAfter = dueAt
         immediateCheckLock.unlock()
+    }
+
+    private func pollNetworkFingerprint(now: Date) {
+        guard now.timeIntervalSince(lastNetworkFingerprintCheck) >= networkFingerprintPollInterval else {
+            return
+        }
+
+        lastNetworkFingerprintCheck = now
+        guard let fingerprint = currentNetworkFingerprint() else {
+            return
+        }
+
+        if let lastNetworkFingerprint, lastNetworkFingerprint != fingerprint {
+            scheduleImmediateRegionCheck()
+        }
+
+        lastNetworkFingerprint = fingerprint
     }
 
     private func consumeImmediateRegionCheckRequest(now: Date) -> Bool {
@@ -504,6 +526,35 @@ private func fetchIPInfo() async throws -> IPInfoResponse {
     }
 
     return response
+}
+
+private func currentNetworkFingerprint() -> String? {
+    guard let store = SCDynamicStoreCreate(nil, "local.iptime.fingerprint" as CFString, nil, nil) else {
+        return nil
+    }
+
+    let patterns = [
+        "State:/Network/Global/IPv4",
+        "State:/Network/Global/IPv6",
+        "State:/Network/Global/DNS",
+        "State:/Network/Interface/.*/IPv4",
+        "State:/Network/Interface/.*/IPv6",
+        "State:/Network/Interface/.*/AirPort"
+    ] as CFArray
+
+    guard let values = SCDynamicStoreCopyMultiple(store, nil, patterns) as? [String: Any] else {
+        return nil
+    }
+
+    let normalized = values.reduce(into: [String: Any]()) { result, item in
+        result[item.key] = item.value
+    }
+
+    guard let data = try? PropertyListSerialization.data(fromPropertyList: normalized, format: .binary, options: 0) else {
+        return normalized.keys.sorted().map { "\($0)=\(String(describing: normalized[$0]!))" }.joined(separator: "\n")
+    }
+
+    return data.base64EncodedString()
 }
 
 private func fetchDecodable<T: Decodable>(_ type: T.Type, from url: URL) async throws -> T {

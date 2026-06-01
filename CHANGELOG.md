@@ -3,6 +3,14 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.23 - 2026-06-01
+
+- Added a network fingerprint fallback in the root daemon.
+- The daemon now compares macOS route, DNS, interface IPv4/IPv6, and AirPort
+  state every 5 seconds and schedules a recheck when that fingerprint changes.
+- This covers Wi-Fi switches even when the SystemConfiguration notification
+  callback does not fire.
+
 ## v0.1.22 - 2026-06-01
 
 - Fixed self-update daemon replacement on macOS launchd.

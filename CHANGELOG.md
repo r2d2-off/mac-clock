@@ -5,6 +5,15 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.36 - 2026-06-02
+
+- Moved menu-bar regional preference synchronization off the main thread onto a
+  serial background queue.
+- Avoided re-reading user regional defaults when daemon status changes but the
+  target regional preference values are unchanged.
+- Suppressed scheduled and network-triggered daemon region checks while
+  Automatic Region Sync is off, after the one-time restore has completed.
+
 ## v0.1.35 - 2026-06-02
 
 - Updated source and DMG uninstall flows to remove IP Time log files during

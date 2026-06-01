@@ -236,6 +236,27 @@ private enum UserDefaultExpectedValue {
     case int(Int)
 }
 
+private struct UserRegionalPreferences {
+    let signature: String
+    let locale: String
+    let metricUnits: Bool
+    let measurementUnits: String
+    let temperatureUnit: String
+    let firstWeekday: Int
+}
+
+private enum UserRegionalPreferencesSyncRequest {
+    case apply(UserRegionalPreferences)
+    case restore
+}
+
+private enum UserRegionalPreferencesSyncResult {
+    case applied(String)
+    case restored
+    case skipped
+    case failed(String)
+}
+
 private struct HomeClockOption {
     let id: String
     let menuTitle: String
@@ -305,6 +326,7 @@ private enum UpdateCheckOutcome {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let store = UserDefaults.standard
+    private let regionalPreferencesQueue = DispatchQueue(label: "local.iptime.regional-preferences")
     private var statusView: StatusBarView?
     private var timer: Timer?
     private var status: IPTimeStatus?
@@ -317,6 +339,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateState: UpdateState = .idle
     private var lastUpdateCheck = Date.distantPast
     private var updateCheckInFlight = false
+    private var regionalPreferencesSyncInFlight = false
+    private var pendingRegionalPreferencesSyncRequest: UserRegionalPreferencesSyncRequest?
     private var lastAppliedRegionalPreferencesSignature: String?
     private var lastUpdateResultSignature: String?
     private var latestUpdateResult: UpdateResult?
@@ -677,44 +701,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func syncUserRegionalPreferences() {
         guard regionSyncEnabled else {
             lastAppliedRegionalPreferencesSignature = nil
-            if let error = restoreOriginalUserPreferencesIfNeeded() {
-                statusReadError = error
-            }
+            enqueueRegionalPreferencesSync(.restore)
             return
         }
-
-        try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
 
         guard let status,
               status.error == nil,
-              let signature = regionalPreferencesSignature(status),
-              signature != lastAppliedRegionalPreferencesSignature,
-              let locale = status.locale,
-              let measurementUnits = status.measurementUnits,
-              let metricUnits = status.metricUnits,
-              let temperatureUnit = status.temperatureUnit,
-              let firstWeekday = status.firstWeekday else {
+              let preferences = regionalPreferences(from: status),
+              preferences.signature != lastAppliedRegionalPreferencesSignature else {
             return
         }
 
-        do {
-            try backupUserPreferencesIfNeeded()
-            try applyUserRegionalPreferences(
-                locale: locale,
-                metricUnits: metricUnits,
-                measurementUnits: measurementUnits,
-                temperatureUnit: temperatureUnit,
-                firstWeekday: firstWeekday
-            )
-            lastAppliedRegionalPreferencesSignature = signature
-        } catch {
-            statusReadError = "Failed to apply user regional preferences: \(error.localizedDescription)"
-        }
+        enqueueRegionalPreferencesSync(.apply(preferences))
     }
 
-    private func regionalPreferencesSignature(_ status: IPTimeStatus) -> String? {
-        guard let generatedAt = status.generatedAt,
-              let locale = status.locale,
+    private func regionalPreferences(from status: IPTimeStatus) -> UserRegionalPreferences? {
+        guard let locale = status.locale,
               let measurementUnits = status.measurementUnits,
               let metricUnits = status.metricUnits,
               let temperatureUnit = status.temperatureUnit,
@@ -722,117 +724,82 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
 
-        return [
-            generatedAt,
+        let signature = [
             locale,
             measurementUnits,
             String(metricUnits),
             temperatureUnit,
             String(firstWeekday)
         ].joined(separator: "|")
+
+        return UserRegionalPreferences(
+            signature: signature,
+            locale: locale,
+            metricUnits: metricUnits,
+            measurementUnits: measurementUnits,
+            temperatureUnit: temperatureUnit,
+            firstWeekday: firstWeekday
+        )
     }
 
-    private func backupUserPreferencesIfNeeded() throws {
-        if FileManager.default.fileExists(atPath: userPreferenceBackupURL.path) {
+    private func enqueueRegionalPreferencesSync(_ request: UserRegionalPreferencesSyncRequest) {
+        if regionalPreferencesSyncInFlight {
+            pendingRegionalPreferencesSyncRequest = request
             return
         }
 
-        let exportResult = runProcess(path: "/usr/bin/defaults", arguments: ["export", "NSGlobalDomain", "-"])
-        guard exportResult.success,
-              let data = exportResult.message.data(using: .utf8),
-              let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
-              let globalDomain = propertyList as? [String: Any] else {
-            throw IPTimeMenuError("failed to read original user preferences")
-        }
-
-        let preferences = Dictionary(uniqueKeysWithValues: userPreferenceKeysToBackup.map { key in
-            (key, userPreferenceBackupValue(from: globalDomain[key]))
-        })
-        let backup = UserPreferenceBackup(createdAt: timestamp(), user: NSUserName(), preferences: preferences)
-
-        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
-        try writeJSON(backup, to: userPreferenceBackupURL)
-        try userPreferenceRestoreScript(preferences: preferences).data(using: .utf8)?.write(to: userPreferenceRestoreScriptURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: userPreferenceBackupURL.path)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: userPreferenceRestoreScriptURL.path)
-    }
-
-    private func applyUserRegionalPreferences(
-        locale: String,
-        metricUnits: Bool,
-        measurementUnits: String,
-        temperatureUnit: String,
-        firstWeekday: Int
-    ) throws {
-        try writeUserDefaultIfNeeded(
-            readArguments: ["read", "NSGlobalDomain", "AppleLocale"],
-            writeArguments: ["write", "NSGlobalDomain", "AppleLocale", "-string", locale],
-            expected: .string(locale),
-            label: "AppleLocale"
-        )
-        try writeUserDefaultIfNeeded(
-            readArguments: ["read", "NSGlobalDomain", "AppleMetricUnits"],
-            writeArguments: ["write", "NSGlobalDomain", "AppleMetricUnits", "-bool", metricUnits ? "true" : "false"],
-            expected: .bool(metricUnits),
-            label: "AppleMetricUnits"
-        )
-        try writeUserDefaultIfNeeded(
-            readArguments: ["read", "NSGlobalDomain", "AppleMeasurementUnits"],
-            writeArguments: ["write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", measurementUnits],
-            expected: .string(measurementUnits),
-            label: "AppleMeasurementUnits"
-        )
-        try writeUserDefaultIfNeeded(
-            readArguments: ["read", "NSGlobalDomain", "AppleTemperatureUnit"],
-            writeArguments: ["write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", temperatureUnit],
-            expected: .string(temperatureUnit),
-            label: "AppleTemperatureUnit"
-        )
-        try writeUserDefaultIfNeeded(
-            readArguments: ["read", "NSGlobalDomain", "AppleFirstWeekday"],
-            writeArguments: ["write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(firstWeekday)],
-            expected: .int(firstWeekday),
-            label: "AppleFirstWeekday"
-        )
-    }
-
-    private func writeUserDefaultIfNeeded(
-        readArguments: [String],
-        writeArguments: [String],
-        expected: UserDefaultExpectedValue,
-        label: String
-    ) throws {
-        let readResult = runProcess(path: "/usr/bin/defaults", arguments: readArguments)
-        if readResult.success, userDefaultValue(readResult.message, matches: expected) {
-            return
-        }
-
-        let writeResult = runProcess(path: "/usr/bin/defaults", arguments: writeArguments)
-        if !writeResult.success {
-            throw IPTimeMenuError("failed to set \(label): \(writeResult.message)")
-        }
-    }
-
-    private func restoreOriginalUserPreferencesIfNeeded() -> String? {
-        if FileManager.default.fileExists(atPath: regionSyncRestoreStateURL.path) {
-            return nil
-        }
-
-        if FileManager.default.fileExists(atPath: userPreferenceRestoreScriptURL.path) {
-            let result = runProcess(path: "/bin/sh", arguments: [userPreferenceRestoreScriptURL.path])
-            if !result.success {
-                return "Failed to restore user preferences: \(result.message)"
+        regionalPreferencesSyncInFlight = true
+        regionalPreferencesQueue.async { [weak self] in
+            let result = performUserRegionalPreferencesSync(request)
+            Task { @MainActor [weak self] in
+                self?.finishRegionalPreferencesSync(result)
             }
         }
+    }
 
-        do {
-            try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
-            try writeJSON(RegionSyncRestoreState(restoredAt: timestamp()), to: regionSyncRestoreStateURL)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: regionSyncRestoreStateURL.path)
-            return nil
-        } catch {
-            return "Failed to record user restore state: \(error.localizedDescription)"
+    private func finishRegionalPreferencesSync(_ result: UserRegionalPreferencesSyncResult) {
+        regionalPreferencesSyncInFlight = false
+        var shouldRefreshDisplay = false
+
+        switch result {
+        case .applied(let signature):
+            lastAppliedRegionalPreferencesSignature = signature
+            shouldRefreshDisplay = clearRegionalPreferencesError()
+        case .restored:
+            lastAppliedRegionalPreferencesSignature = nil
+            shouldRefreshDisplay = clearRegionalPreferencesError()
+        case .skipped:
+            break
+        case .failed(let message):
+            statusReadError = message
+            shouldRefreshDisplay = true
         }
+
+        if shouldRefreshDisplay {
+            buildMenu()
+            updateStatusTitle()
+        }
+
+        if let pendingRequest = pendingRegionalPreferencesSyncRequest {
+            pendingRegionalPreferencesSyncRequest = nil
+            enqueueRegionalPreferencesSync(pendingRequest)
+        }
+    }
+
+    @discardableResult
+    private func clearRegionalPreferencesError() -> Bool {
+        let prefixes = [
+            "Failed to apply user regional preferences:",
+            "Failed to restore user preferences:",
+            "Failed to record user restore state:"
+        ]
+
+        guard let statusReadError, prefixes.contains(where: { statusReadError.hasPrefix($0) }) else {
+            return false
+        }
+
+        self.statusReadError = nil
+        return true
     }
 
     private func loadPendingManualRecheckState() {
@@ -1790,6 +1757,119 @@ private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     try encoder.encode(value).write(to: url, options: .atomic)
+}
+
+private func performUserRegionalPreferencesSync(_ request: UserRegionalPreferencesSyncRequest) -> UserRegionalPreferencesSyncResult {
+    do {
+        switch request {
+        case .apply(let preferences):
+            try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
+            try backupUserPreferencesIfNeeded()
+            try applyUserRegionalPreferences(preferences)
+            return .applied(preferences.signature)
+        case .restore:
+            return try restoreOriginalUserPreferencesIfNeeded()
+        }
+    } catch {
+        return .failed("Failed to apply user regional preferences: \(error.localizedDescription)")
+    }
+}
+
+private func backupUserPreferencesIfNeeded() throws {
+    if FileManager.default.fileExists(atPath: userPreferenceBackupURL.path) {
+        return
+    }
+
+    let exportResult = runProcess(path: "/usr/bin/defaults", arguments: ["export", "NSGlobalDomain", "-"])
+    guard exportResult.success,
+          let data = exportResult.message.data(using: .utf8),
+          let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+          let globalDomain = propertyList as? [String: Any] else {
+        throw IPTimeMenuError("failed to read original user preferences")
+    }
+
+    let preferences = Dictionary(uniqueKeysWithValues: userPreferenceKeysToBackup.map { key in
+        (key, userPreferenceBackupValue(from: globalDomain[key]))
+    })
+    let backup = UserPreferenceBackup(createdAt: timestamp(), user: NSUserName(), preferences: preferences)
+
+    try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+    try writeJSON(backup, to: userPreferenceBackupURL)
+    try userPreferenceRestoreScript(preferences: preferences).data(using: .utf8)?.write(to: userPreferenceRestoreScriptURL, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: userPreferenceBackupURL.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: userPreferenceRestoreScriptURL.path)
+}
+
+private func applyUserRegionalPreferences(_ preferences: UserRegionalPreferences) throws {
+    try writeUserDefaultIfNeeded(
+        readArguments: ["read", "NSGlobalDomain", "AppleLocale"],
+        writeArguments: ["write", "NSGlobalDomain", "AppleLocale", "-string", preferences.locale],
+        expected: .string(preferences.locale),
+        label: "AppleLocale"
+    )
+    try writeUserDefaultIfNeeded(
+        readArguments: ["read", "NSGlobalDomain", "AppleMetricUnits"],
+        writeArguments: ["write", "NSGlobalDomain", "AppleMetricUnits", "-bool", preferences.metricUnits ? "true" : "false"],
+        expected: .bool(preferences.metricUnits),
+        label: "AppleMetricUnits"
+    )
+    try writeUserDefaultIfNeeded(
+        readArguments: ["read", "NSGlobalDomain", "AppleMeasurementUnits"],
+        writeArguments: ["write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", preferences.measurementUnits],
+        expected: .string(preferences.measurementUnits),
+        label: "AppleMeasurementUnits"
+    )
+    try writeUserDefaultIfNeeded(
+        readArguments: ["read", "NSGlobalDomain", "AppleTemperatureUnit"],
+        writeArguments: ["write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", preferences.temperatureUnit],
+        expected: .string(preferences.temperatureUnit),
+        label: "AppleTemperatureUnit"
+    )
+    try writeUserDefaultIfNeeded(
+        readArguments: ["read", "NSGlobalDomain", "AppleFirstWeekday"],
+        writeArguments: ["write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(preferences.firstWeekday)],
+        expected: .int(preferences.firstWeekday),
+        label: "AppleFirstWeekday"
+    )
+}
+
+private func writeUserDefaultIfNeeded(
+    readArguments: [String],
+    writeArguments: [String],
+    expected: UserDefaultExpectedValue,
+    label: String
+) throws {
+    let readResult = runProcess(path: "/usr/bin/defaults", arguments: readArguments)
+    if readResult.success, userDefaultValue(readResult.message, matches: expected) {
+        return
+    }
+
+    let writeResult = runProcess(path: "/usr/bin/defaults", arguments: writeArguments)
+    if !writeResult.success {
+        throw IPTimeMenuError("failed to set \(label): \(writeResult.message)")
+    }
+}
+
+private func restoreOriginalUserPreferencesIfNeeded() throws -> UserRegionalPreferencesSyncResult {
+    if FileManager.default.fileExists(atPath: regionSyncRestoreStateURL.path) {
+        return .skipped
+    }
+
+    if FileManager.default.fileExists(atPath: userPreferenceRestoreScriptURL.path) {
+        let result = runProcess(path: "/bin/sh", arguments: [userPreferenceRestoreScriptURL.path])
+        if !result.success {
+            return .failed("Failed to restore user preferences: \(result.message)")
+        }
+    }
+
+    do {
+        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+        try writeJSON(RegionSyncRestoreState(restoredAt: timestamp()), to: regionSyncRestoreStateURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: regionSyncRestoreStateURL.path)
+        return .restored
+    } catch {
+        return .failed("Failed to record user restore state: \(error.localizedDescription)")
+    }
 }
 
 private func userPreferenceBackupValue(from value: Any?) -> UserPreferenceBackupValue {

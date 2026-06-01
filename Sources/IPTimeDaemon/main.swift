@@ -263,18 +263,27 @@ private final class Runner {
         while true {
             let now = Date()
             let activeUser = activeUser(now: now)
-            let regionCheckInterval = configuredRegionCheckInterval(activeUser: activeUser)
-
-            pollNetworkFingerprint(now: now)
+            let regionSyncEnabled = isRegionSyncEnabled(activeUser: activeUser)
 
             if await handleManualRecheckRequest(activeUser: activeUser) {
                 lastRegionCheck = Date()
-            } else if consumeImmediateRegionCheckRequest(now: now) {
-                await runSingleCheck(activeUser: activeUser, trigger: "network")
-                lastRegionCheck = Date()
-            } else if now.timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
-                await runSingleCheck(activeUser: activeUser, trigger: "scheduled")
-                lastRegionCheck = Date()
+            } else if !regionSyncEnabled {
+                cancelImmediateRegionCheckRequest()
+                if needsSystemRegionSyncRestore() {
+                    await runSingleCheck(activeUser: activeUser, trigger: "disabled")
+                    lastRegionCheck = Date()
+                }
+            } else {
+                let regionCheckInterval = configuredRegionCheckInterval(activeUser: activeUser)
+                pollNetworkFingerprint(now: now)
+
+                if consumeImmediateRegionCheckRequest(now: now) {
+                    await runSingleCheck(activeUser: activeUser, trigger: "network")
+                    lastRegionCheck = Date()
+                } else if now.timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
+                    await runSingleCheck(activeUser: activeUser, trigger: "scheduled")
+                    lastRegionCheck = Date()
+                }
             }
 
             await handleUpdateRequest(activeUser: activeUser)
@@ -392,6 +401,15 @@ private final class Runner {
         }
 
         return config.regionSyncEnabled ?? true
+    }
+
+    private func needsSystemRegionSyncRestore() -> Bool {
+        guard !isDryRun,
+              FileManager.default.fileExists(atPath: systemPreferenceRestoreScriptURL.path) else {
+            return false
+        }
+
+        return !FileManager.default.fileExists(atPath: systemRegionSyncRestoreStateURL.path)
     }
 
     private func runSingleCheck(activeUser: ActiveUser?, trigger: String) async {

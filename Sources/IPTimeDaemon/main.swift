@@ -395,6 +395,7 @@ private final class Runner {
         try writeLaunchDaemonPlist(to: plistURL)
         try runOrThrow(path: "/usr/sbin/chown", arguments: ["root:wheel", plistURL.path])
         try runOrThrow(path: "/bin/chmod", arguments: ["644", plistURL.path])
+        try scheduleLaunchDaemonRestart(plistURL: plistURL)
 
         writeUpdateResult(
             activeUser: activeUser,
@@ -606,6 +607,27 @@ private func downloadUpdate(from urlString: String, to destinationURL: URL, acti
     try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
 }
 
+private func scheduleLaunchDaemonRestart(plistURL: URL) throws {
+    let scriptURL = supportDirectoryURL.appendingPathComponent("restart-daemon.sh")
+    let script = """
+    #!/bin/sh
+    /bin/sleep 2
+    /bin/launchctl bootout system \(shellQuoted(plistURL.path)) >/dev/null 2>&1 || true
+    /bin/launchctl bootstrap system \(shellQuoted(plistURL.path)) >/dev/null 2>&1 || true
+    /bin/launchctl enable system/local.iptime.daemon >/dev/null 2>&1 || true
+    /bin/launchctl kickstart -k system/local.iptime.daemon >/dev/null 2>&1 || true
+    /bin/rm -f "$0"
+    """
+
+    try FileManager.default.createDirectory(at: scriptURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try script.data(using: .utf8)?.write(to: scriptURL, options: .atomic)
+    try runOrThrow(path: "/usr/sbin/chown", arguments: ["root:wheel", scriptURL.path])
+    try runOrThrow(path: "/bin/chmod", arguments: ["700", scriptURL.path])
+
+    let command = "(/bin/sh \(shellQuoted(scriptURL.path)) >> /Library/Logs/IPTimeDaemon.out.log 2>> /Library/Logs/IPTimeDaemon.err.log &)"
+    try runOrThrow(path: "/bin/sh", arguments: ["-c", command])
+}
+
 private func writeLaunchDaemonPlist(to url: URL) throws {
     let plist = """
     <?xml version="1.0" encoding="UTF-8"?>
@@ -691,6 +713,10 @@ private func runProcess(path: String, arguments: [String]) -> (success: Bool, me
 private func safePathComponent(_ value: String) -> String {
     let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
     return String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+}
+
+private func shellQuoted(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
 private func countryName(for code: String?, fallback: String?) -> String? {

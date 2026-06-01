@@ -114,6 +114,18 @@ To remove status and user config too:
 ./scripts/uninstall.sh --purge
 ```
 
+## Troubleshooting
+
+If the menu bar keeps showing stale IP data after an update, check the daemon:
+
+```sh
+launchctl print system/local.iptime.daemon
+```
+
+If it shows `spawn failed` or `EX_CONFIG`, install the latest `.pkg` from the
+DMG once. Current releases re-register the LaunchDaemon after replacing the root
+daemon binary so future self-updates can restart cleanly.
+
 ## What Gets Installed
 
 ```text

@@ -3,6 +3,15 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.22 - 2026-06-01
+
+- Fixed self-update daemon replacement on macOS launchd.
+- After replacing `/usr/local/libexec/iptime-daemon`, the updater now schedules
+  a root restart script that re-registers `local.iptime.daemon` with
+  `bootout`, `bootstrap`, `enable`, and `kickstart`.
+- This refreshes launchd's lightweight code requirement for the replaced daemon
+  binary and prevents `EX_CONFIG` spawn failures after self-update.
+
 ## v0.1.21 - 2026-06-01
 
 - Added a SystemConfiguration network-change monitor in the root daemon.

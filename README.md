@@ -37,6 +37,11 @@ timezones with country flags, so daylight saving time is handled correctly.
 `Fixed UTC Offset` uses compact team-time offsets such as `UTC+03:00` or
 `UTC-07:00` without changing the macOS system timezone.
 
+Current Home Clock presets are Moscow, California, New York, Dubai, Shanghai,
+Singapore, Bangkok, Berlin, Amsterdam, Paris, London, Warsaw, and Tokyo. Home
+Clock presets only affect the left menu bar clock; they do not control VPN
+regional preference rules.
+
 Use `Settings -> IP Check Interval` to choose the regular background interval:
 1, 5, 10, 15, 30, or 60 minutes. The daemon reads interval changes live.
 
@@ -181,7 +186,11 @@ rejects invalid IP addresses, non-success API statuses, invalid country codes,
 unsupported countries, invalid timezones, overlong display fields, and control
 or format characters.
 
-Supported regional mappings:
+Supported VPN regional mappings:
+
+These mappings are used by the root daemon when the current external IP country
+is recognized. They control the macOS system timezone and safe user regional
+preferences for the active user.
 
 ```text
 PL -> Europe/Warsaw      -> pl_PL  -> metric, Celsius, Monday

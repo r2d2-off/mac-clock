@@ -3,6 +3,11 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## Unreleased
+
+- Clarified the README distinction between VPN regional mappings and Home Clock
+  presets, and listed the current Home Clock presets.
+
 ## v0.1.33 - 2026-06-01
 
 - Added strict validation for ip-api.com responses before the daemon applies any

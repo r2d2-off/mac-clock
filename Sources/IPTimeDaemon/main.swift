@@ -15,11 +15,14 @@ private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == 
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let defaultRegionCheckInterval: TimeInterval = 600
 private let supportedRegionCheckIntervals = Set([60, 300, 600, 900, 1_800, 3_600])
+private let activeUserRefreshInterval: TimeInterval = 60
+private let missingActiveUserRefreshInterval: TimeInterval = 5
 private let networkFingerprintPollInterval: TimeInterval = 5
 private let networkChangeDebounceInterval: TimeInterval = 5
 private let networkChangeMinimumCheckInterval: TimeInterval = 10
 private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
 private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
+private let regionSyncRestoreStateFileName = "region-sync-restore-state.json"
 private let userPreferenceKeysToBackup = [
     "AppleLanguages",
     "AppleLocale",
@@ -150,6 +153,10 @@ private struct RegionCheckState: Encodable {
 private struct IPTimeConfig: Decodable {
     let regionCheckIntervalSeconds: Int
     let regionSyncEnabled: Bool?
+}
+
+private struct RegionSyncRestoreState: Encodable {
+    let restoredAt: String
 }
 
 private struct SystemPreferenceBackup: Encodable {
@@ -284,6 +291,8 @@ private final class Runner {
     private var lastNetworkTriggeredRegionCheck = Date.distantPast
     private var lastNetworkFingerprintCheck = Date.distantPast
     private var lastNetworkFingerprint: String?
+    private var cachedActiveUser: ActiveUser?
+    private var lastActiveUserRefresh = Date.distantPast
     private var networkMonitor: NetworkChangeMonitor?
 
     func run() async {
@@ -304,8 +313,8 @@ private final class Runner {
         monitor.start()
 
         while true {
-            let activeUser = findActiveUser()
             let now = Date()
+            let activeUser = activeUser(now: now)
             let regionCheckInterval = configuredRegionCheckInterval(activeUser: activeUser)
 
             pollNetworkFingerprint(now: now)
@@ -323,6 +332,17 @@ private final class Runner {
             await handleUpdateRequest(activeUser: activeUser)
             try? await Task.sleep(nanoseconds: updatePollIntervalNanoseconds)
         }
+    }
+
+    private func activeUser(now: Date) -> ActiveUser? {
+        let refreshInterval = cachedActiveUser == nil ? missingActiveUserRefreshInterval : activeUserRefreshInterval
+        guard now.timeIntervalSince(lastActiveUserRefresh) >= refreshInterval else {
+            return cachedActiveUser
+        }
+
+        cachedActiveUser = findActiveUser()
+        lastActiveUserRefresh = now
+        return cachedActiveUser
     }
 
     private func scheduleImmediateRegionCheck() {
@@ -434,9 +454,13 @@ private final class Runner {
         }
 
         guard isRegionSyncEnabled(activeUser: activeUser) else {
-            let error = restoreOriginalPreferences(activeUser: activeUser)
+            let error = isDryRun ? nil : restoreOriginalPreferencesIfNeeded(activeUser: activeUser)
             writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error)
             return
+        }
+
+        if !isDryRun {
+            clearRegionSyncRestoreState(activeUser: activeUser)
         }
 
         do {
@@ -446,6 +470,40 @@ private final class Runner {
         } catch {
             writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error.localizedDescription)
         }
+    }
+
+    private func restoreOriginalPreferencesIfNeeded(activeUser: ActiveUser?) -> String? {
+        guard let activeUser else {
+            return nil
+        }
+
+        let stateURL = regionSyncRestoreStateURL(for: activeUser)
+        if FileManager.default.fileExists(atPath: stateURL.path) {
+            return nil
+        }
+
+        if let error = restoreOriginalPreferences(activeUser: activeUser) {
+            return error
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let state = RegionSyncRestoreState(restoredAt: timestamp())
+            try writeJSON(state, to: stateURL)
+            _ = runProcess(path: "/usr/sbin/chown", arguments: [activeUser.name, stateURL.path])
+            _ = runProcess(path: "/bin/chmod", arguments: ["600", stateURL.path])
+            return nil
+        } catch {
+            return "Failed to record region sync restore state: \(error.localizedDescription)"
+        }
+    }
+
+    private func clearRegionSyncRestoreState(activeUser: ActiveUser?) {
+        guard let activeUser else {
+            return
+        }
+
+        try? FileManager.default.removeItem(at: regionSyncRestoreStateURL(for: activeUser))
     }
 
     private func handleUpdateRequest(activeUser: ActiveUser?) async {
@@ -1101,6 +1159,10 @@ private func userPreferenceBackupURL(for user: ActiveUser) -> URL {
 
 private func userPreferenceRestoreScriptURL(for user: ActiveUser) -> URL {
     userSupportDirectoryURL(for: user).appendingPathComponent(userPreferenceRestoreScriptFileName)
+}
+
+private func regionSyncRestoreStateURL(for user: ActiveUser) -> URL {
+    userSupportDirectoryURL(for: user).appendingPathComponent(regionSyncRestoreStateFileName)
 }
 
 private func updateRequestURL(for user: ActiveUser) -> URL {

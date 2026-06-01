@@ -16,6 +16,7 @@ private let updateRequestURL = userSupportURL.appendingPathComponent("update-req
 private let updateResultURL = userSupportURL.appendingPathComponent("update-result.json")
 private let recheckRequestURL = userSupportURL.appendingPathComponent("recheck-request.json")
 private let configURL = userSupportURL.appendingPathComponent("config.json")
+private let regionSyncRestoreStateURL = userSupportURL.appendingPathComponent("region-sync-restore-state.json")
 private let moscowTimeZone = TimeZone(identifier: "Europe/Moscow")!
 private let launchAgentLabel = "local.iptime.menubar"
 private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
@@ -452,6 +453,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             try writeConfig()
+            try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
             _ = try requestRegionCheck()
             manualRecheckError = nil
         } catch {

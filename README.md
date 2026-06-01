@@ -174,6 +174,7 @@ daemon binary so future self-updates can restart cleanly.
 /Library/Application Support/IPTime/restore-system-preferences.sh
 ~/Library/LaunchAgents/local.iptime.menubar.plist
 ~/Library/Application Support/IPTime/config.json
+~/Library/Application Support/IPTime/region-sync-restore-state.json
 ~/Library/Application Support/IPTime/original-user-preferences.json
 ~/Library/Application Support/IPTime/restore-user-preferences.sh
 ~/Library/Application Support/IPTime/recheck-request.json
@@ -223,8 +224,9 @@ AppleFirstWeekday
 
 Before the first regional change, the daemon stores the original system
 timezone and active-user regional preferences once. Turning off
-`Settings -> Automatic Region Sync` restores those saved values and stops future
-regional changes. Uninstall runs the same restore scripts before removing files.
+`Settings -> Automatic Region Sync` restores those saved values once and stops
+future regional changes. Uninstall runs the same restore scripts before removing
+files.
 
 App language is intentionally kept English-only. The app, daemon, and installer
 do not change `AppleLanguages`. Set it manually if needed:

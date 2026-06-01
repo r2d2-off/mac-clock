@@ -9,6 +9,10 @@ on GitHub Releases.
   regional preferences before the daemon applies regional changes.
 - Added `Settings -> Automatic Region Sync`; turning it off restores saved
   preferences and stops future automatic timezone/locale changes.
+- Cached active-user detection in the daemon loop instead of spawning `stat`,
+  `id`, and `dscl` once per second while idle.
+- Limited Region Sync restore to the disable transition instead of repeating it
+  on every scheduled check while sync is off.
 - Updated source and DMG uninstall flows to restore saved preferences before
   removing IP Time files, with full support-data cleanup as the default.
 - Removed the pkg installer's one-time `AppleLanguages=en-US` write.

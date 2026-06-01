@@ -194,6 +194,7 @@ daemon binary so future self-updates can restart cleanly.
 ~/Library/Application Support/IPTime/region-sync-restore-state.json
 ~/Library/Application Support/IPTime/original-user-preferences.json
 ~/Library/Application Support/IPTime/restore-user-preferences.sh
+~/Library/Application Support/IPTime/daemon-stop-state.json
 ~/Library/Application Support/IPTime/recheck-request.json
 ~/Library/Application Support/IPTime/stop-request.json
 ~/Library/Application Support/IPTime/update-request.json

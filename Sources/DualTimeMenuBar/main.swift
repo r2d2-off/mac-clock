@@ -16,6 +16,7 @@ private let updateRequestURL = userSupportURL.appendingPathComponent("update-req
 private let updateResultURL = userSupportURL.appendingPathComponent("update-result.json")
 private let recheckRequestURL = userSupportURL.appendingPathComponent("recheck-request.json")
 private let stopRequestURL = userSupportURL.appendingPathComponent("stop-request.json")
+private let daemonStopStateURL = userSupportURL.appendingPathComponent("daemon-stop-state.json")
 private let configURL = userSupportURL.appendingPathComponent("config.json")
 private let regionSyncRestoreStateURL = userSupportURL.appendingPathComponent("region-sync-restore-state.json")
 private let userPreferenceBackupURL = userSupportURL.appendingPathComponent("original-user-preferences.json")
@@ -34,6 +35,8 @@ private let uiRefreshInterval: TimeInterval = 0.25
 private let manualRecheckTimeout: TimeInterval = 120
 private let regionCheckStateMaxAge: TimeInterval = 120
 private let completedCheckIndicatorDuration: TimeInterval = 1.5
+private let daemonStopSettleTimeout: TimeInterval = 8
+private let daemonStopSettlePollInterval: TimeInterval = 0.1
 private let userPreferenceKeysToBackup = [
     "AppleLanguages",
     "AppleLocale",
@@ -162,6 +165,10 @@ private struct RecheckRequest: Codable {
 }
 
 private struct StopRequest: Codable {
+    let requestedAt: String
+}
+
+private struct DaemonStopState: Codable {
     let requestedAt: String
 }
 
@@ -491,7 +498,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        clearStopRequest()
+        settlePendingDaemonStopIfNeeded()
         loadConfig()
         loadPendingManualRecheckState()
 
@@ -551,6 +558,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             </array>
             <key>RunAtLoad</key>
             <true/>
+            <key>KeepAlive</key>
+            <true/>
             <key>LimitLoadToSessionType</key>
             <string>Aqua</string>
             <key>StandardOutPath</key>
@@ -589,7 +598,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         _ = runProcess(path: "/bin/launchctl", arguments: ["enable", launchAgentService])
         if !isLaunchAgentRunning() {
-            _ = runProcess(path: "/bin/launchctl", arguments: ["kickstart", "-k", launchAgentService])
+            _ = runProcess(path: "/bin/launchctl", arguments: ["kickstart", launchAgentService])
         }
 
         NSApp.terminate(nil)
@@ -855,21 +864,48 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
             let request = StopRequest(requestedAt: timestamp())
+            let state = DaemonStopState(requestedAt: request.requestedAt)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(state).write(to: daemonStopStateURL, options: .atomic)
             try encoder.encode(request).write(to: stopRequestURL, options: .atomic)
         } catch {
             statusReadError = "Failed to request daemon stop: \(error.localizedDescription)"
         }
     }
 
-    private func clearStopRequest() {
-        try? FileManager.default.removeItem(at: stopRequestURL)
-    }
-
     private func removeLaunchAgent() {
         try? FileManager.default.removeItem(at: launchAgentURL)
         _ = runProcess(path: "/bin/launchctl", arguments: ["bootout", launchAgentService])
+    }
+
+    private func settlePendingDaemonStopIfNeeded() {
+        let hasStopState = FileManager.default.fileExists(atPath: daemonStopStateURL.path)
+        let hasStopRequest = FileManager.default.fileExists(atPath: stopRequestURL.path)
+        guard hasStopState || hasStopRequest else {
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(daemonStopSettleTimeout)
+        while isLaunchDaemonRunning(), Date() < deadline {
+            Thread.sleep(forTimeInterval: daemonStopSettlePollInterval)
+        }
+
+        if isLaunchDaemonRunning() {
+            try? FileManager.default.removeItem(at: daemonStopStateURL)
+            try? FileManager.default.removeItem(at: stopRequestURL)
+        } else {
+            try? FileManager.default.removeItem(at: stopRequestURL)
+        }
+    }
+
+    private func clearDaemonStopStateIfRunning() {
+        guard isLaunchDaemonRunning() else {
+            return
+        }
+
+        try? FileManager.default.removeItem(at: daemonStopStateURL)
+        try? FileManager.default.removeItem(at: stopRequestURL)
     }
 
     private func ensureLaunchDaemonRunning() {
@@ -889,6 +925,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if !result.success {
             daemonStartError = "Background service is stopped: \(result.message)"
             statusReadError = daemonStartError
+        } else {
+            clearDaemonStopStateIfRunning()
         }
     }
 

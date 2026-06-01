@@ -5,6 +5,15 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.42 - 2026-06-02
+
+- Hardens the rapid `Quit IP Time` then immediate reopen path by recording a
+  daemon stop state and waiting for the prior daemon teardown to settle before
+  starting it again.
+- Adds `KeepAlive` to the per-user LaunchAgent so launchd respawns the menu bar
+  app after an unexpected crash, while explicit Quit still unloads and removes
+  the LaunchAgent.
+
 ## v0.1.41 - 2026-06-02
 
 - Makes manual launches bootstrap the per-user LaunchAgent and hand off to the

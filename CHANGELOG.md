@@ -3,6 +3,16 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.21 - 2026-06-01
+
+- Added a SystemConfiguration network-change monitor in the root daemon.
+- The daemon now schedules an immediate region recheck after macOS reports a
+  network, Wi-Fi, route, or DNS change, instead of waiting for the 10-minute
+  region timer.
+- Added a 5-second debounce and 30-second minimum interval for network-triggered
+  checks so Wi-Fi reconnect bursts do not spam the IP API.
+- Documented network-triggered region rechecks in README.
+
 ## v0.1.20 - 2026-06-01
 
 - Added a user LaunchAgent so the menu bar app starts automatically after login

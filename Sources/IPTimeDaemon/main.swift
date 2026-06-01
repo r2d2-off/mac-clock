@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 private let ipAPIURL = URL(string: "http://ip-api.com/json")!
 private let defaultStatusPath = "/Library/Application Support/IPTime/status.json"
@@ -7,6 +8,8 @@ private let supportDirectoryURL = statusURL.deletingLastPathComponent()
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let regionCheckInterval: TimeInterval = 600
+private let networkChangeDebounceInterval: TimeInterval = 5
+private let networkChangeMinimumCheckInterval: TimeInterval = 30
 private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
 private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
 
@@ -109,6 +112,76 @@ private struct UpdateResult: Encodable {
     let message: String
 }
 
+private final class NetworkChangeMonitor {
+    private let onChange: () -> Void
+    private let queue = DispatchQueue(label: "local.iptime.network-monitor")
+    private var store: SCDynamicStore?
+
+    init(onChange: @escaping () -> Void) {
+        self.onChange = onChange
+    }
+
+    deinit {
+        stop()
+    }
+
+    func start() {
+        guard store == nil else {
+            return
+        }
+
+        var context = SCDynamicStoreContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        guard let dynamicStore = SCDynamicStoreCreate(
+            nil,
+            "local.iptime.daemon" as CFString,
+            { _, _, info in
+                guard let info else {
+                    return
+                }
+
+                let monitor = Unmanaged<NetworkChangeMonitor>.fromOpaque(info).takeUnretainedValue()
+                monitor.onChange()
+            },
+            &context
+        ) else {
+            FileHandle.standardError.write(Data("Failed to create network change monitor\n".utf8))
+            return
+        }
+
+        let patterns = [
+            "State:/Network/Global/IPv4",
+            "State:/Network/Global/IPv6",
+            "State:/Network/Global/DNS",
+            "State:/Network/Interface/.*/IPv4",
+            "State:/Network/Interface/.*/IPv6",
+            "State:/Network/Interface/.*/AirPort"
+        ] as CFArray
+
+        guard SCDynamicStoreSetNotificationKeys(dynamicStore, nil, patterns),
+              SCDynamicStoreSetDispatchQueue(dynamicStore, queue) else {
+            FileHandle.standardError.write(Data("Failed to start network change monitor\n".utf8))
+            return
+        }
+
+        store = dynamicStore
+    }
+
+    func stop() {
+        if let store {
+            SCDynamicStoreSetDispatchQueue(store, nil)
+        }
+
+        store = nil
+    }
+}
+
 @main
 private enum IPTimeDaemon {
     static func main() async {
@@ -119,6 +192,10 @@ private enum IPTimeDaemon {
 
 private final class Runner {
     private var updateInProgress = false
+    private let immediateCheckLock = NSLock()
+    private var immediateRegionCheckAfter: Date?
+    private var lastNetworkTriggeredRegionCheck = Date.distantPast
+    private var networkMonitor: NetworkChangeMonitor?
 
     func run() async {
         if isDryRun || runOnce {
@@ -131,11 +208,20 @@ private final class Runner {
 
     private func runLoop() async {
         var lastRegionCheck = Date.distantPast
+        let monitor = NetworkChangeMonitor { [weak self] in
+            self?.scheduleImmediateRegionCheck()
+        }
+        networkMonitor = monitor
+        monitor.start()
 
         while true {
             let activeUser = findActiveUser()
+            let now = Date()
 
-            if Date().timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
+            if consumeImmediateRegionCheckRequest(now: now) {
+                await runSingleCheck(activeUser: activeUser)
+                lastRegionCheck = Date()
+            } else if now.timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
                 await runSingleCheck(activeUser: activeUser)
                 lastRegionCheck = Date()
             }
@@ -143,6 +229,33 @@ private final class Runner {
             await handleUpdateRequest(activeUser: activeUser)
             try? await Task.sleep(nanoseconds: updatePollIntervalNanoseconds)
         }
+    }
+
+    private func scheduleImmediateRegionCheck() {
+        let dueAt = Date().addingTimeInterval(networkChangeDebounceInterval)
+
+        immediateCheckLock.lock()
+        immediateRegionCheckAfter = dueAt
+        immediateCheckLock.unlock()
+    }
+
+    private func consumeImmediateRegionCheckRequest(now: Date) -> Bool {
+        immediateCheckLock.lock()
+        defer {
+            immediateCheckLock.unlock()
+        }
+
+        guard let dueAt = immediateRegionCheckAfter, now >= dueAt else {
+            return false
+        }
+
+        immediateRegionCheckAfter = nil
+        guard now.timeIntervalSince(lastNetworkTriggeredRegionCheck) >= networkChangeMinimumCheckInterval else {
+            return false
+        }
+
+        lastNetworkTriggeredRegionCheck = now
+        return true
     }
 
     private func runSingleCheck(activeUser: ActiveUser?) async {

@@ -13,6 +13,11 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "DualTimeMenuBar"),
-        .executableTarget(name: "IPTimeDaemon")
+        .executableTarget(
+            name: "IPTimeDaemon",
+            linkerSettings: [
+                .linkedFramework("SystemConfiguration")
+            ]
+        )
     ]
 )

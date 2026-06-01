@@ -5,6 +5,13 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.38 - 2026-06-02
+
+- Keeps the Home Clock visible in the menu bar even when no regional changes are
+  allowed.
+- Adds explicit `Allow ...` regional approval toggles directly in the main menu
+  details area, above the status rows.
+
 ## v0.1.37 - 2026-06-02
 
 - Changed first-launch behavior to observe-only: IP Time now checks and shows

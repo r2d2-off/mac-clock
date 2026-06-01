@@ -4,16 +4,16 @@ macOS menu bar IP/VPN clock:
 <img width="1700" height="194" alt="image" src="https://github.com/user-attachments/assets/42be8623-ecde-4c64-9c6a-a45c635ccb9a" />
 
 On first launch IP Time is observe-only: it checks the external IP and shows the
-detected country flag plus IP address, but it does not change the macOS
-timezone, locale, measurement units, temperature unit, or first weekday. Use
-`Settings -> Allowed Changes` to explicitly enable only the settings IP Time is
-allowed to manage.
+home/team clock plus detected country flag and IP address, but it does not
+change the macOS timezone, locale, measurement units, temperature unit, or first
+weekday. The main menu shows explicit `Allow ...` approvals for each setting,
+and the same controls are also available under `Settings -> Allowed Changes`.
 
-When any allowed change is enabled, the menu bar expands to two segments. The
-first segment is the configurable home/team clock. It defaults to Moscow time
-(`Europe/Moscow`) and can be changed to a preset city timezone or a fixed UTC
-offset under `Settings -> Home Clock`. The second segment is the current system
-time and detected IP region.
+The first menu bar segment is the configurable home/team clock. It defaults to
+Moscow time (`Europe/Moscow`) and can be changed to a preset city timezone or a
+fixed UTC offset under `Settings -> Home Clock`. The second segment is the
+detected IP region. When any allowed change is enabled, the second segment also
+shows the current system time.
 
 A root LaunchDaemon checks the external IP region every 10 minutes, and also
 rechecks shortly after macOS reports a network, Wi-Fi, route, or DNS change. As

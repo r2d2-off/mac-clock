@@ -1129,6 +1129,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        let ipCheck = NSMenuItem(title: "IP check: every \(intervalLabel(config.regionCheckIntervalSeconds))", action: nil, keyEquivalent: "")
+        ipCheck.isEnabled = false
+        menu.addItem(ipCheck)
+
+        let allowedChanges = NSMenuItem(title: "Allowed changes: \(regionalPermissionsDescription())", action: nil, keyEquivalent: "")
+        allowedChanges.isEnabled = false
+        menu.addItem(allowedChanges)
+
+        addRegionalPermissionItems(to: menu)
+
         for title in detailRows() {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -1190,6 +1200,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
 
         statusItem.menu = menu
+    }
+
+    private func addRegionalPermissionItems(to menu: NSMenu) {
+        let header = NSMenuItem(title: "Approve changes:", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+
+        for permission in RegionalPermissionKey.allCases {
+            let item = NSMenuItem(title: "Allow \(permission.menuTitle)", action: #selector(toggleRegionalPermission(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = permission.rawValue
+            item.state = regionalPermissions.isEnabled(permission) ? .on : .off
+            item.indentationLevel = 1
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
     }
 
     private func settingsMenu() -> NSMenu {
@@ -1329,8 +1356,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func detailRows() -> [String] {
         var rows: [String] = [
-            "IP check: every \(intervalLabel(config.regionCheckIntervalSeconds))",
-            "Allowed changes: \(regionalPermissionsDescription())",
             "Home clock: \(homeClockDescription())"
         ]
 
@@ -1538,8 +1563,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func statusDisplay() -> StatusDisplay {
         let now = Date()
+        let homeClock = resolvedHomeClock()
+        let homeText = formattedTime(now, in: homeClock.timeZone)
+
         if !regionalChangesAllowed {
-            var segment = StatusSegment(
+            let homeSegment = StatusSegment(
+                flag: homeClock.symbol,
+                primary: homeText,
+                detail: nil,
+                detailFirst: true,
+                isError: false
+            )
+            var ipSegment = StatusSegment(
                 flag: flag(for: countryCode),
                 primary: ipLabel,
                 detail: nil,
@@ -1549,7 +1584,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             )
 
             if hasIPLookupError {
-                segment = StatusSegment(
+                ipSegment = StatusSegment(
                     flag: "",
                     primary: "[ ip-api.com error ]",
                     detail: nil,
@@ -1560,15 +1595,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             if case .requested(let version) = updateState {
-                segment = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
+                ipSegment = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
             }
 
-            return StatusDisplay(segments: [segment], summary: segment.summary)
+            let segments = [homeSegment, ipSegment]
+            return StatusDisplay(segments: segments, summary: segments.map(\.summary).joined(separator: "  "))
         }
 
-        let homeClock = resolvedHomeClock()
         let localText = formattedTime(now, in: .autoupdatingCurrent)
-        let homeText = formattedTime(now, in: homeClock.timeZone)
         let homeDate = formattedDate(now, in: homeClock.timeZone)
         var segments = [
             StatusSegment(flag: homeClock.symbol, primary: homeText, detail: homeDate, detailFirst: true, isError: false),

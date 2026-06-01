@@ -15,11 +15,13 @@ app.
 If something fails, the VPN/IP segment turns red and the error is shown in the
 menu.
 
-The menu bar app can also check GitHub Releases for updates. When an update is
-available, choose `Install Update ...` from the menu. The app writes an update
-request and shows update progress while the root LaunchDaemon downloads the
-release zip and replaces the installed app and daemon without another installer
-prompt.
+The menu bar app checks GitHub Releases once at launch and then every 6 hours.
+Choose `Check Update...` to check manually; the app shows an alert saying
+whether it is up to date, an update is available, or the check failed. When an
+update is available, choose `Install Update ...` from the menu or the alert. The
+app writes an update request and shows update progress while the root
+LaunchDaemon downloads the release zip and replaces the installed app and daemon
+without another installer prompt.
 
 ## Install From Source
 
@@ -50,6 +52,10 @@ IP Time.pkg
 
 The native macOS installer asks for the admin password once, installs the menu
 bar app and root LaunchDaemon, then opens `IP Time.app`.
+
+The release package is unsigned. If macOS says it cannot verify the installer,
+Control-click the package and choose Open, or allow it from System Settings ->
+Privacy & Security.
 
 Build a DMG locally:
 
@@ -145,7 +151,9 @@ AppleFirstWeekday
 ```
 
 App language is intentionally kept English-only. The daemon does not change
-`AppleLanguages`; set it once to English if needed:
+`AppleLanguages`. The pkg installer sets `AppleLanguages` to English once for
+the active user; source and zip installs leave it unchanged. Set it manually if
+needed:
 
 ```sh
 defaults write NSGlobalDomain AppleLanguages -array "en-US"

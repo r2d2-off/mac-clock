@@ -327,9 +327,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         version.isEnabled = false
         menu.addItem(version)
 
-        let updateItem = updateMenuItem()
-        updateItem.target = self
-        menu.addItem(updateItem)
+        for updateItem in updateMenuItems() {
+            updateItem.target = self
+            menu.addItem(updateItem)
+        }
 
         menu.addItem(.separator())
 
@@ -344,24 +345,39 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func updateMenuItem() -> NSMenuItem {
+    private func updateMenuItems() -> [NSMenuItem] {
         switch updateState {
         case .idle:
-            return NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+            return [NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")]
         case .checking:
             let item = NSMenuItem(title: "Checking for Updates...", action: nil, keyEquivalent: "")
             item.isEnabled = false
-            return item
-        case .upToDate:
-            return NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+            return [item]
+        case .upToDate(let version):
+            let status = NSMenuItem(title: "Up to Date (\(version))", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            return [
+                status,
+                NSMenuItem(title: "Check Again...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+            ]
         case .available(let candidate):
-            return NSMenuItem(title: "Install Update \(candidate.version)", action: #selector(installUpdateFromMenu), keyEquivalent: "")
+            return [NSMenuItem(title: "Install Update \(candidate.version)", action: #selector(installUpdateFromMenu), keyEquivalent: "")]
         case .requested(let version):
             let item = NSMenuItem(title: "Installing Update \(version)...", action: nil, keyEquivalent: "")
             item.isEnabled = false
-            return item
-        case .failed:
-            return NSMenuItem(title: "Retry Update Check...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+            return [item]
+        case .failed(let message):
+            let status = NSMenuItem(title: "Update Check Failed", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            status.toolTip = message
+            status.attributedTitle = NSAttributedString(
+                string: status.title,
+                attributes: [.foregroundColor: NSColor.systemRed]
+            )
+            return [
+                status,
+                NSMenuItem(title: "Retry Update Check...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+            ]
         }
     }
 

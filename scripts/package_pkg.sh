@@ -125,6 +125,11 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" 
 <dict>
     <key>Label</key>
     <string>$AGENT_LABEL</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>IPTIME_LAUNCH_AGENT</key>
+        <string>1</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>$APP_DEST/Contents/MacOS/DualTimeMenuBar</string>

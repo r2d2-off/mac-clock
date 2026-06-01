@@ -487,6 +487,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         ensureLaunchAgent()
+        if handOffToLaunchAgentIfNeeded() {
+            return
+        }
+
         clearStopRequest()
         loadConfig()
         loadPendingManualRecheckState()
@@ -536,6 +540,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         <dict>
             <key>Label</key>
             <string>\(launchAgentLabel)</string>
+            <key>EnvironmentVariables</key>
+            <dict>
+                <key>IPTIME_LAUNCH_AGENT</key>
+                <string>1</string>
+            </dict>
             <key>ProgramArguments</key>
             <array>
                 <string>\(executableURL.path)</string>
@@ -563,6 +572,57 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             statusReadError = "Failed to install login item: \(error.localizedDescription)"
         }
+    }
+
+    private func handOffToLaunchAgentIfNeeded() -> Bool {
+        guard !isRunningAsLaunchAgent else {
+            return false
+        }
+
+        if !isLaunchAgentLoaded() {
+            let result = runProcess(path: "/bin/launchctl", arguments: ["bootstrap", launchAgentDomain, launchAgentURL.path])
+            if !result.success && !result.message.contains("Service is already loaded") {
+                statusReadError = "Failed to start login item: \(result.message)"
+                return false
+            }
+        }
+
+        _ = runProcess(path: "/bin/launchctl", arguments: ["enable", launchAgentService])
+        if !isLaunchAgentRunning() {
+            _ = runProcess(path: "/bin/launchctl", arguments: ["kickstart", "-k", launchAgentService])
+        }
+
+        NSApp.terminate(nil)
+        return true
+    }
+
+    private var isRunningAsLaunchAgent: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["IPTIME_LAUNCH_AGENT"] == "1"
+            || environment["XPC_SERVICE_NAME"] == launchAgentLabel
+            || isCurrentProcessLaunchAgentService
+    }
+
+    private var isCurrentProcessLaunchAgentService: Bool {
+        let result = runProcess(path: "/bin/launchctl", arguments: ["print", launchAgentService])
+        return result.success && result.message.contains("pid = \(getpid())")
+    }
+
+    private var launchAgentDomain: String {
+        "gui/\(getuid())"
+    }
+
+    private var launchAgentService: String {
+        "\(launchAgentDomain)/\(launchAgentLabel)"
+    }
+
+    private func isLaunchAgentLoaded() -> Bool {
+        runProcess(path: "/bin/launchctl", arguments: ["print", launchAgentService]).success
+    }
+
+    private func isLaunchAgentRunning() -> Bool {
+        let result = runProcess(path: "/bin/launchctl", arguments: ["print", launchAgentService])
+        return result.success && result.message.contains("state = running")
     }
 
     private var countryCode: String {
@@ -809,6 +869,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func removeLaunchAgent() {
         try? FileManager.default.removeItem(at: launchAgentURL)
+        _ = runProcess(path: "/bin/launchctl", arguments: ["bootout", launchAgentService])
     }
 
     private func ensureLaunchDaemonRunning() {

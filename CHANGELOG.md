@@ -5,6 +5,13 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.41 - 2026-06-02
+
+- Makes manual launches bootstrap the per-user LaunchAgent and hand off to the
+  launchd-managed menu bar instance, so reopening the app after Quit fully
+  restores both background services without leaving a duplicate manual copy.
+- Unloads the LaunchAgent service on Quit in addition to removing its plist.
+
 ## v0.1.40 - 2026-06-02
 
 - Changes `Quit IP Time` to restore saved user preferences, request the root

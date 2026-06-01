@@ -43,9 +43,9 @@ already running to avoid duplicate requests.
 saved user preferences, asks the root daemon to restore saved system
 preferences, disables and stops the LaunchDaemon, removes the LaunchAgent, and
 closes the menu bar app. Opening `IP Time.app` again recreates the LaunchAgent
-and starts the LaunchDaemon again. If the daemon was stopped, macOS asks for an
-administrator password because starting a root LaunchDaemon requires elevated
-privileges.
+and hands off to the launchd-managed menu bar instance, then starts the
+LaunchDaemon again. If the daemon was stopped, macOS asks for an administrator
+password because starting a root LaunchDaemon requires elevated privileges.
 
 Use `Settings -> Home Clock` to change the left clock. `Presets` uses real IANA
 timezones with country flags, so daylight saving time is handled correctly.

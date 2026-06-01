@@ -3,6 +3,17 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.33 - 2026-06-01
+
+- Added strict validation for ip-api.com responses before the daemon applies any
+  system timezone or user regional preference changes.
+- The daemon now rejects invalid IP addresses, non-success API statuses, invalid
+  country codes, unsupported countries, invalid timezones, overlong text fields,
+  and control characters in display text.
+- README now states explicitly that external IP, country, and timezone checks are
+  done via `ip-api.com`.
+- Removed the README note about keyboard input sources.
+
 ## v0.1.32 - 2026-06-01
 
 - Added an explicit red `ip-api.com error` state in the VPN/IP menu bar segment

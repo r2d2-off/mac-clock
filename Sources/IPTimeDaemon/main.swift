@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SystemConfiguration
 
 private let ipAPIURL = URL(string: "http://ip-api.com/json")!
@@ -50,6 +51,15 @@ private struct IPInfoResponse: Decodable {
         countryName = try container.decodeIfPresent(String.self, forKey: .country)
         timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
     }
+}
+
+private struct IPInfo {
+    let ip: String
+    let city: String?
+    let region: String?
+    let countryCode: String
+    let countryName: String?
+    let timezone: String
 }
 
 private struct IPTimeStatus: Encodable {
@@ -500,23 +510,15 @@ private final class Runner {
         _ = runAsUser(activeUser, arguments: ["open", appDestinationURL.path])
     }
 
-    private func apply(info: IPInfoResponse, activeUser: ActiveUser?) -> ApplyResult {
-        guard let timeZone = normalized(info.timezone) else {
-            return ApplyResult(locale: nil, rule: nil, error: "ip-api.com did not return a timezone")
+    private func apply(info: IPInfo, activeUser: ActiveUser?) -> ApplyResult {
+        let country = info.countryCode
+        guard let rule = regionRules[country] else {
+            return ApplyResult(locale: nil, rule: nil, error: "No regional rule for country \(country); system not changed")
         }
 
-        guard TimeZone(identifier: timeZone) != nil else {
-            return ApplyResult(locale: nil, rule: nil, error: "Invalid timezone from ip-api.com: \(timeZone)")
-        }
-
-        let country = normalized(info.country)?.uppercased() ?? "?"
-        let timeZoneResult = applyTimeZoneIfNeeded(timeZone)
+        let timeZoneResult = applyTimeZoneIfNeeded(info.timezone)
         if let error = timeZoneResult {
             return ApplyResult(locale: nil, rule: nil, error: error)
-        }
-
-        guard let rule = regionRules[country] else {
-            return ApplyResult(locale: nil, rule: nil, error: "No regional rule for country \(country); timezone applied")
         }
 
         guard let activeUser else {
@@ -630,16 +632,16 @@ private final class Runner {
         return result.success ? nil : "Failed to set timezone: \(result.message)"
     }
 
-    private func writeStatus(info: IPInfoResponse?, activeUser: ActiveUser?, locale: String?, rule: RegionRule?, error: String?) {
-        let countryCode = normalized(info?.country)?.uppercased()
+    private func writeStatus(info: IPInfo?, activeUser: ActiveUser?, locale: String?, rule: RegionRule?, error: String?) {
+        let countryCode = info?.countryCode
         let status = IPTimeStatus(
             generatedAt: timestamp(),
-            ip: normalized(info?.ip),
-            city: normalized(info?.city),
-            region: normalized(info?.region),
+            ip: info?.ip,
+            city: info?.city,
+            region: info?.region,
             countryCode: countryCode,
-            country: countryName(for: countryCode, fallback: normalized(info?.countryName) ?? normalized(info?.region)),
-            timeZone: normalized(info?.timezone),
+            country: countryName(for: countryCode, fallback: info?.countryName ?? info?.region),
+            timeZone: info?.timezone,
             locale: locale,
             measurementUnits: rule?.measurementUnits,
             metricUnits: rule?.metricUnits,
@@ -672,13 +674,111 @@ private final class Runner {
     }
 }
 
-private func fetchIPInfo() async throws -> IPInfoResponse {
+private func fetchIPInfo() async throws -> IPInfo {
     let response = try await fetchDecodable(IPInfoResponse.self, from: ipAPIURL)
-    if response.status == "fail" {
-        throw IPTimeError("ip-api.com lookup failed: \(response.message ?? "unknown error")")
+    guard response.status == "success" else {
+        let message = safeErrorDetail(response.message) ?? "unknown error"
+        throw IPTimeError("ip-api.com lookup failed: \(message)")
     }
 
-    return response
+    guard let ip = validatedIPAddress(response.ip) else {
+        throw IPTimeError("ip-api.com returned an invalid IP address")
+    }
+
+    guard let countryCode = validatedCountryCode(response.country) else {
+        throw IPTimeError("ip-api.com returned an invalid country code")
+    }
+
+    guard regionRules[countryCode] != nil else {
+        throw IPTimeError("Unsupported country from ip-api.com: \(countryCode)")
+    }
+
+    guard let timezone = validatedTimeZoneIdentifier(response.timezone) else {
+        throw IPTimeError("ip-api.com returned an invalid timezone")
+    }
+
+    return IPInfo(
+        ip: ip,
+        city: try validatedDisplayText(response.city, field: "city", maxLength: 96),
+        region: try validatedDisplayText(response.region, field: "region", maxLength: 96),
+        countryCode: countryCode,
+        countryName: try validatedDisplayText(response.countryName, field: "country", maxLength: 96),
+        timezone: timezone
+    )
+}
+
+private func validatedIPAddress(_ value: String?) -> String? {
+    guard let value = normalized(value), value.count <= 45 else {
+        return nil
+    }
+
+    var ipv4 = in_addr()
+    if value.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 {
+        return value
+    }
+
+    var ipv6 = in6_addr()
+    if value.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 {
+        return value
+    }
+
+    return nil
+}
+
+private func validatedCountryCode(_ value: String?) -> String? {
+    guard let value = normalized(value), value.count == 2 else {
+        return nil
+    }
+
+    let scalars = Array(value.unicodeScalars)
+    guard scalars.allSatisfy({ scalar in
+        scalar.value >= 65 && scalar.value <= 90
+    }) else {
+        return nil
+    }
+
+    return value
+}
+
+private func validatedTimeZoneIdentifier(_ value: String?) -> String? {
+    guard let value = normalized(value), value.count <= 96 else {
+        return nil
+    }
+
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./+-")
+    guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }),
+          TimeZone(identifier: value) != nil else {
+        return nil
+    }
+
+    return value
+}
+
+private func validatedDisplayText(_ value: String?, field: String, maxLength: Int) throws -> String? {
+    guard let value = normalized(value) else {
+        return nil
+    }
+
+    guard value.count <= maxLength, value.utf8.count <= maxLength * 4 else {
+        throw IPTimeError("ip-api.com returned an overlong \(field)")
+    }
+
+    guard value.unicodeScalars.allSatisfy({ scalar in
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator, .privateUse, .surrogate, .unassigned:
+            return false
+        default:
+            return true
+        }
+    }) else {
+        throw IPTimeError("ip-api.com returned an invalid \(field)")
+    }
+
+    return value
+}
+
+private func safeErrorDetail(_ value: String?) -> String? {
+    try? validatedDisplayText(value, field: "message", maxLength: 160)
 }
 
 private func currentNetworkFingerprint() -> String? {

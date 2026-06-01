@@ -15,6 +15,8 @@ rechecks when route, DNS, interface, assigned IPv4, or router state changes. It
 updates the system timezone and safe user regional preferences, then writes
 status for the menu bar app.
 
+External IP, country, and timezone are checked via `ip-api.com`.
+
 Network-triggered checks are debounced for 5 seconds and run at most once every
 10 seconds. If another network change happens inside that window, the daemon
 delays the recheck instead of dropping it.
@@ -209,8 +211,7 @@ defaults write NSGlobalDomain AppleLanguages -array "en-US"
 
 The app intentionally does not change keyboard layouts, Apple ID/App Store
 region, Location Services, browser settings, DNS, WebRTC, or 12/24-hour system
-time format. Keyboard input sources are separate from app language; keeping
-English and Russian layouts enabled is fine.
+time format.
 
 ## Replace The macOS Clock Visually
 

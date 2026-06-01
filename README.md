@@ -1,10 +1,8 @@
 # IP Time
 
 macOS menu bar clock for VPN work:
+<img width="1700" height="194" alt="image" src="https://github.com/user-attachments/assets/42be8623-ecde-4c64-9c6a-a45c635ccb9a" />
 
-```text
-[🇷🇺 Mon Jun 1 19:07    🇳🇱 18:07  203.0.113.42]
-```
 
 The first segment is the configurable home/team clock. It defaults to Moscow
 time (`Europe/Moscow`) and can be changed to a preset city timezone or a fixed

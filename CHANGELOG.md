@@ -5,6 +5,12 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.43 - 2026-06-02
+
+- Shows terminal update result windows, such as "Installed ...", only once per
+  update result instead of repeating them on every app launch while
+  `update-result.json` is still recent.
+
 ## v0.1.42 - 2026-06-02
 
 - Hardens the rapid `Quit IP Time` then immediate reopen path by recording a

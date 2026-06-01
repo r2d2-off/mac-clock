@@ -3,6 +3,7 @@ import Foundation
 
 private enum DefaultsKey {
     static let use24Hour = "use24Hour"
+    static let shownUpdateResultSignature = "shownUpdateResultSignature"
 }
 
 private let githubLatestReleaseURL = URL(string: "https://api.github.com/repos/r2d2-off/mac-clock/releases/latest")!
@@ -1161,7 +1162,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         lastUpdateResultSignature = signature
         latestUpdateResult = result
-        applyUpdateResult(result, showWindow: showRecentWindow && isRecentUpdateResult(result))
+        let showWindow = shouldShowUpdateResultWindow(result, signature: signature, showRecentWindow: showRecentWindow)
+        applyUpdateResult(result, showWindow: showWindow)
         buildMenu()
         updateStatusTitle()
     }
@@ -1177,16 +1179,36 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             updateState = .upToDate(result.version)
             if showWindow {
                 showUpdateProgressWindow(version: result.version, message: result.message, isError: false, isActive: false)
+                recordShownUpdateResult(result)
                 closeUpdateProgressWindow(after: 2.5)
             }
         case "failed":
             updateState = .failed("Update \(result.version) failed: \(result.message)")
             if showWindow {
                 showUpdateProgressWindow(version: result.version, message: result.message, isError: true, isActive: false)
+                recordShownUpdateResult(result)
             }
         default:
             break
         }
+    }
+
+    private func shouldShowUpdateResultWindow(_ result: UpdateResult, signature: String, showRecentWindow: Bool) -> Bool {
+        guard showRecentWindow, isRecentUpdateResult(result) else {
+            return false
+        }
+
+        switch result.status {
+        case "installed", "failed":
+            return store.string(forKey: DefaultsKey.shownUpdateResultSignature) != signature
+        default:
+            return true
+        }
+    }
+
+    private func recordShownUpdateResult(_ result: UpdateResult) {
+        let signature = [result.generatedAt, result.version, result.status, result.message].joined(separator: "|")
+        store.set(signature, forKey: DefaultsKey.shownUpdateResultSignature)
     }
 
     private func writeLocalUpdateResult(version: String, status: String, message: String) throws {

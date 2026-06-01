@@ -176,6 +176,11 @@ country code, city, region, and timezone detection. This endpoint is
 intentionally HTTP because the free ip-api.com API does not serve this route over
 HTTPS.
 
+The daemon validates the ip-api.com response before changing system settings. It
+rejects invalid IP addresses, non-success API statuses, invalid country codes,
+unsupported countries, invalid timezones, overlong display fields, and control
+or format characters.
+
 Supported regional mappings:
 
 ```text

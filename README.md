@@ -24,8 +24,9 @@ delays the recheck instead of dropping it.
 Use `Recheck IP Now` from the menu to force an immediate check after connecting
 a VPN manually. While any IP check is running, manual, network-triggered, or
 scheduled, the VPN segment keeps its normal layout and shows a small animated
-pulsing dot next to the IP address. The menu item is temporarily disabled while
-a check is already running to avoid duplicate requests.
+comet indicator next to the IP address. When the check finishes, it briefly
+draws a green checkmark. The menu item is temporarily disabled while a check is
+already running to avoid duplicate requests.
 
 Use `Settings -> Home Clock` to change the left clock. `Presets` uses real IANA
 timezones with country flags, so daylight saving time is handled correctly.

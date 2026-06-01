@@ -29,21 +29,43 @@ private let manualRecheckTimeout: TimeInterval = 120
 private let regionCheckStateMaxAge: TimeInterval = 120
 private let completedCheckIndicatorDuration: TimeInterval = 1.5
 
+private enum StatusActivityIndicator {
+    case none
+    case checking
+    case completed(Date)
+
+    var isVisible: Bool {
+        switch self {
+        case .none:
+            return false
+        case .checking, .completed:
+            return true
+        }
+    }
+}
+
 private struct StatusSegment {
     let flag: String
     let primary: String
     let detail: String?
     let detailFirst: Bool
     let isError: Bool
-    let isLoading: Bool
+    let activity: StatusActivityIndicator
 
-    init(flag: String, primary: String, detail: String?, detailFirst: Bool, isError: Bool, isLoading: Bool = false) {
+    init(
+        flag: String,
+        primary: String,
+        detail: String?,
+        detailFirst: Bool,
+        isError: Bool,
+        activity: StatusActivityIndicator = .none
+    ) {
         self.flag = flag
         self.primary = primary
         self.detail = detail
         self.detailFirst = detailFirst
         self.isError = isError
-        self.isLoading = isLoading
+        self.activity = activity
     }
 
     var summary: String {
@@ -1121,6 +1143,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusTitle() {
         let display = statusDisplay()
         statusView?.segments = display.segments
+        statusView?.setAnimating(display.segments.contains { $0.activity.isVisible })
 
         if let statusView {
             statusItem.length = statusView.intrinsicContentSize.width
@@ -1141,7 +1164,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 detail: ipLabel,
                 detailFirst: false,
                 isError: displayedError != nil,
-                isLoading: showsIPActivityIndicator
+                activity: ipActivityIndicator
             )
         ]
 
@@ -1273,7 +1296,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var showsIPActivityIndicator: Bool {
-        isManualRecheckInProgress || isRegionCheckVisible
+        ipActivityIndicator.isVisible
+    }
+
+    private var ipActivityIndicator: StatusActivityIndicator {
+        if let state = regionCheckState {
+            if state.completedAt == nil, isRegionCheckActive {
+                return .checking
+            }
+
+            if let completedAt = state.completedAt,
+               let completedDate = parseTimestamp(completedAt),
+               Date().timeIntervalSince(completedDate) <= completedCheckIndicatorDuration {
+                return .completed(completedDate)
+            }
+        }
+
+        if isManualRecheckInProgress {
+            return .checking
+        }
+
+        return .none
     }
 
     private var activeIPCheckStartedAt: Date? {
@@ -1475,6 +1518,7 @@ private final class StatusBarView: NSView {
     }
 
     var onClick: (() -> Void)?
+    private var frameTimer: Timer?
 
     private let capsuleInset: CGFloat = 1
     private let capsuleHeight: CGFloat = 20
@@ -1483,7 +1527,7 @@ private final class StatusBarView: NSView {
     private let flagGap: CGFloat = 5
     private let detailGap: CGFloat = 7
     private let activityIndicatorGap: CGFloat = 5
-    private let activityIndicatorSize: CGFloat = 7
+    private let activityIndicatorSize: CGFloat = 8
     private let primaryFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
     private let detailFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
 
@@ -1508,6 +1552,25 @@ private final class StatusBarView: NSView {
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+    }
+
+    func setAnimating(_ enabled: Bool) {
+        if enabled {
+            guard frameTimer == nil else {
+                return
+            }
+
+            let timer = Timer(timeInterval: 1.0 / 60.0, target: self, selector: #selector(animationFrameFired), userInfo: nil, repeats: true)
+            RunLoop.main.add(timer, forMode: .common)
+            frameTimer = timer
+        } else {
+            frameTimer?.invalidate()
+            frameTimer = nil
+        }
+    }
+
+    @objc private func animationFrameFired() {
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1580,9 +1643,9 @@ private final class StatusBarView: NSView {
             x += detailText.size().width
         }
 
-        if segment.isLoading {
+        if segment.activity.isVisible {
             x += activityIndicatorGap
-            drawActivityIndicator(atX: x, centerY: rect.midY, color: segment.isError ? .systemRed : .controlAccentColor)
+            drawActivityIndicator(segment.activity, atX: x, centerY: rect.midY, color: segment.isError ? .systemRed : .controlAccentColor)
         }
     }
 
@@ -1600,21 +1663,85 @@ private final class StatusBarView: NSView {
         text.draw(in: NSRect(x: x, y: centerY - size.height / 2 - 0.5, width: size.width, height: size.height))
     }
 
-    private func drawActivityIndicator(atX x: CGFloat, centerY: CGFloat, color: NSColor) {
-        let center = NSPoint(x: x + activityIndicatorSize / 2, y: centerY - 0.2)
-        let radius = activityIndicatorSize / 2
-        let phase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2
-        let pulse = 0.5 + 0.5 * sin(CGFloat(phase) * .pi * 2)
-        let dotRadius = radius * (0.55 + 0.25 * pulse)
-        let dot = NSBezierPath(ovalIn: NSRect(
-            x: center.x - dotRadius,
-            y: center.y - dotRadius,
-            width: dotRadius * 2,
-            height: dotRadius * 2
-        ))
+    private func drawActivityIndicator(_ activity: StatusActivityIndicator, atX x: CGFloat, centerY: CGFloat, color: NSColor) {
+        let rect = NSRect(
+            x: x,
+            y: centerY - activityIndicatorSize / 2 - 0.2,
+            width: activityIndicatorSize,
+            height: activityIndicatorSize
+        )
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        let radius = activityIndicatorSize / 2 - 0.8
 
-        color.withAlphaComponent(0.45 + 0.5 * pulse).setFill()
-        dot.fill()
+        switch activity {
+        case .none:
+            break
+        case .checking:
+            drawCometIndicator(center: center, radius: radius, rect: rect, color: color)
+        case .completed(let completedAt):
+            drawCompletionCheck(center: center, radius: radius, completedAt: completedAt)
+        }
+    }
+
+    private func drawCometIndicator(center: NSPoint, radius: CGFloat, rect: NSRect, color: NSColor) {
+        let track = NSBezierPath(ovalIn: rect.insetBy(dx: 0.6, dy: 0.6))
+        NSColor.labelColor.withAlphaComponent(0.10).setStroke()
+        track.lineWidth = 1
+        track.stroke()
+
+        let phase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9
+        let head = CGFloat(phase * 360)
+        let segmentCount = 24
+        let tailSpan: CGFloat = 280
+
+        for index in 0..<segmentCount {
+            let tailPosition = CGFloat(index) / CGFloat(segmentCount)
+            let startAngle = head - tailPosition * tailSpan
+            let endAngle = startAngle - tailSpan / CGFloat(segmentCount) - 1
+            let segment = NSBezierPath()
+            segment.appendArc(withCenter: center, radius: radius, startAngle: endAngle, endAngle: startAngle, clockwise: false)
+            segment.lineWidth = 1.25
+            segment.lineCapStyle = .round
+            color.withAlphaComponent(0.95 * (1 - tailPosition)).setStroke()
+            segment.stroke()
+        }
+    }
+
+    private func drawCompletionCheck(center: NSPoint, radius: CGFloat, completedAt: Date) {
+        let elapsed = max(Date().timeIntervalSince(completedAt), 0)
+        let drawProgress = min(1, CGFloat(elapsed / 0.35))
+        let fadeProgress = max(0, min(1, CGFloat((elapsed - 0.9) / 0.6)))
+        let alpha = 0.95 * (1 - fadeProgress)
+
+        guard alpha > 0 else {
+            return
+        }
+
+        let start = NSPoint(x: center.x - radius * 0.62, y: center.y - radius * 0.02)
+        let corner = NSPoint(x: center.x - radius * 0.13, y: center.y - radius * 0.47)
+        let end = NSPoint(x: center.x + radius * 0.67, y: center.y + radius * 0.48)
+        let check = NSBezierPath()
+        check.move(to: start)
+
+        if drawProgress < 0.5 {
+            check.line(to: lerp(start, corner, drawProgress / 0.5))
+        } else {
+            check.line(to: corner)
+            check.line(to: lerp(corner, end, (drawProgress - 0.5) / 0.5))
+        }
+
+        check.lineWidth = 1.45
+        check.lineCapStyle = .round
+        check.lineJoinStyle = .round
+        NSColor.systemGreen.withAlphaComponent(alpha).setStroke()
+        check.stroke()
+    }
+
+    private func lerp(_ start: NSPoint, _ end: NSPoint, _ progress: CGFloat) -> NSPoint {
+        NSPoint(
+            x: start.x + (end.x - start.x) * progress,
+            y: start.y + (end.y - start.y) * progress
+        )
     }
 
     private func segmentWidth(for segment: StatusSegment) -> CGFloat {
@@ -1628,7 +1755,7 @@ private final class StatusBarView: NSView {
             width += attributed(detail, font: detailFont, color: .secondaryLabelColor).size().width
         }
 
-        if segment.isLoading {
+        if segment.activity.isVisible {
             width += activityIndicatorGap + activityIndicatorSize
         }
 

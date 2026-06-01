@@ -3,6 +3,15 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.29 - 2026-06-01
+
+- Replaced the IP check pulsing dot with a smoother comet-tail activity
+  indicator next to the IP address.
+- Added a short green completion checkmark after manual, network-triggered, or
+  scheduled IP checks finish.
+- Added a dedicated 60 fps redraw timer inside the menu bar view while the IP
+  check indicator is visible, without increasing JSON/status polling frequency.
+
 ## v0.1.28 - 2026-06-01
 
 - Added `Settings -> Home Clock` for the left menu bar clock.

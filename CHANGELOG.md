@@ -3,6 +3,17 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.27 - 2026-06-01
+
+- Reworked IP recheck progress display.
+- The menu bar now keeps the normal VPN segment layout and shows a small
+  animated ring next to the IP address instead of replacing the segment text.
+- The root daemon now writes `check-state.json` for manual, network-triggered,
+  and scheduled region checks, so the app can show activity for every IP
+  refresh path.
+- Manual `Recheck IP Now` is still disabled while an IP check is already
+  running.
+
 ## v0.1.26 - 2026-06-01
 
 - Added an animated `Checking IP` state in the menu bar while a manual

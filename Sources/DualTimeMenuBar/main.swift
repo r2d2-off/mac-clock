@@ -8,6 +8,8 @@ private enum DefaultsKey {
 private let githubLatestReleaseURL = URL(string: "https://api.github.com/repos/r2d2-off/mac-clock/releases/latest")!
 private let defaultStatusPath = "/Library/Application Support/IPTime/status.json"
 private let statusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["IPTIME_STATUS_PATH"] ?? defaultStatusPath)
+private let statusSupportURL = statusURL.deletingLastPathComponent()
+private let regionCheckStateURL = statusSupportURL.appendingPathComponent("check-state.json")
 private let userSupportURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/IPTime", isDirectory: true)
 private let updateRequestURL = userSupportURL.appendingPathComponent("update-request.json")
@@ -21,10 +23,11 @@ private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
 private let defaultRegionCheckIntervalSeconds = 600
 private let regionCheckIntervalOptions = [60, 300, 600, 900, 1_800, 3_600]
 private let statusRefreshInterval: TimeInterval = 5
-private let activeRecheckStatusRefreshInterval: TimeInterval = 1
+private let activeCheckStatusRefreshInterval: TimeInterval = 1
 private let uiRefreshInterval: TimeInterval = 0.25
 private let manualRecheckTimeout: TimeInterval = 120
-private let recheckSpinnerFrames = ["◐", "◓", "◑", "◒"]
+private let regionCheckStateMaxAge: TimeInterval = 120
+private let completedCheckIndicatorDuration: TimeInterval = 1.5
 
 private struct StatusSegment {
     let flag: String
@@ -32,6 +35,16 @@ private struct StatusSegment {
     let detail: String?
     let detailFirst: Bool
     let isError: Bool
+    let isLoading: Bool
+
+    init(flag: String, primary: String, detail: String?, detailFirst: Bool, isError: Bool, isLoading: Bool = false) {
+        self.flag = flag
+        self.primary = primary
+        self.detail = detail
+        self.detailFirst = detailFirst
+        self.isError = isError
+        self.isLoading = isLoading
+    }
 
     var summary: String {
         if detailFirst {
@@ -111,6 +124,12 @@ private struct RecheckRequest: Codable {
     let requestedAt: String
 }
 
+private struct RegionCheckState: Codable {
+    let startedAt: String
+    let completedAt: String?
+    let trigger: String?
+}
+
 private struct IPTimeConfig: Codable {
     let regionCheckIntervalSeconds: Int
 }
@@ -139,6 +158,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusView: StatusBarView?
     private var timer: Timer?
     private var status: IPTimeStatus?
+    private var regionCheckState: RegionCheckState?
     private var statusReadError: String?
     private var lastStatusRead = Date.distantPast
     private var config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds)
@@ -192,6 +212,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.view = statusView
 
         loadStatus()
+        loadRegionCheckState()
         loadPendingUpdateState()
         buildMenu()
         updateStatusTitle()
@@ -274,9 +295,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func timerFired() {
         loadUpdateResult(showRecentWindow: true)
+        loadRegionCheckState()
         expireManualRecheckIfNeeded()
 
-        let refreshInterval = isManualRecheckInProgress ? activeRecheckStatusRefreshInterval : statusRefreshInterval
+        let refreshInterval = showsIPActivityIndicator ? activeCheckStatusRefreshInterval : statusRefreshInterval
         if Date().timeIntervalSince(lastStatusRead) >= refreshInterval {
             loadStatus()
             buildMenu()
@@ -411,6 +433,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             status = nil
             statusReadError = "No daemon status yet: \(error.localizedDescription)"
         }
+    }
+
+    private func loadRegionCheckState() {
+        guard let data = try? Data(contentsOf: regionCheckStateURL),
+              let state = try? JSONDecoder().decode(RegionCheckState.self, from: data),
+              isFreshRegionCheckState(state) else {
+            regionCheckState = nil
+            return
+        }
+
+        regionCheckState = state
     }
 
     private func loadConfig() {
@@ -651,12 +684,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         let recheck = NSMenuItem(
-            title: isManualRecheckInProgress ? "Rechecking IP \(recheckSpinnerFrame())..." : "Recheck IP Now",
-            action: isManualRecheckInProgress ? nil : #selector(recheckIPNow),
+            title: isIPCheckInProgress ? "Rechecking IP..." : "Recheck IP Now",
+            action: isIPCheckInProgress ? nil : #selector(recheckIPNow),
             keyEquivalent: ""
         )
         recheck.target = self
-        recheck.isEnabled = !isManualRecheckInProgress
+        recheck.isEnabled = !isIPCheckInProgress
         menu.addItem(recheck)
 
         let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
@@ -796,8 +829,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             rows.append("Last check: \(generatedAt)")
         }
 
-        if let manualRecheckRequestedAt {
-            rows.append("Manual recheck: in progress since \(shortTime(manualRecheckRequestedAt))")
+        if let startedAt = activeIPCheckStartedAt {
+            let trigger = nonEmpty(regionCheckState?.trigger).map { " (\($0))" } ?? ""
+            rows.append("IP check: in progress since \(shortTime(startedAt))\(trigger)")
         }
 
         if let manualRecheckError {
@@ -958,12 +992,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let moscowDate = dateFormatter.string(from: now)
         var segments = [
             StatusSegment(flag: "🇷🇺", primary: moscowText, detail: moscowDate, detailFirst: true, isError: false),
-            StatusSegment(flag: flag(for: countryCode), primary: localText, detail: ipLabel, detailFirst: false, isError: displayedError != nil)
+            StatusSegment(
+                flag: flag(for: countryCode),
+                primary: localText,
+                detail: ipLabel,
+                detailFirst: false,
+                isError: displayedError != nil,
+                isLoading: showsIPActivityIndicator
+            )
         ]
-
-        if isManualRecheckInProgress {
-            segments[1] = StatusSegment(flag: recheckSpinnerFrame(), primary: "Checking IP", detail: ipLabel, detailFirst: false, isError: false)
-        }
 
         if case .requested(let version) = updateState {
             segments[1] = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
@@ -989,9 +1026,53 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         manualRecheckRequestedAt != nil
     }
 
-    private func recheckSpinnerFrame() -> String {
-        let frameIndex = Int((Date().timeIntervalSinceReferenceDate / uiRefreshInterval).rounded(.down)) % recheckSpinnerFrames.count
-        return recheckSpinnerFrames[frameIndex]
+    private var isIPCheckInProgress: Bool {
+        isManualRecheckInProgress || isRegionCheckActive
+    }
+
+    private var showsIPActivityIndicator: Bool {
+        isManualRecheckInProgress || isRegionCheckVisible
+    }
+
+    private var activeIPCheckStartedAt: Date? {
+        if let state = regionCheckState,
+           state.completedAt == nil,
+           let startedAt = parseTimestamp(state.startedAt) {
+            return startedAt
+        }
+
+        return manualRecheckRequestedAt
+    }
+
+    private var isRegionCheckActive: Bool {
+        guard let state = regionCheckState,
+              state.completedAt == nil,
+              let startedAt = parseTimestamp(state.startedAt) else {
+            return false
+        }
+
+        return Date().timeIntervalSince(startedAt) <= regionCheckStateMaxAge
+    }
+
+    private var isRegionCheckVisible: Bool {
+        guard let state = regionCheckState else {
+            return false
+        }
+
+        return isFreshRegionCheckState(state)
+    }
+
+    private func isFreshRegionCheckState(_ state: RegionCheckState) -> Bool {
+        if let completedAt = state.completedAt,
+           let completedDate = parseTimestamp(completedAt) {
+            return Date().timeIntervalSince(completedDate) <= completedCheckIndicatorDuration
+        }
+
+        guard let startedAt = parseTimestamp(state.startedAt) else {
+            return false
+        }
+
+        return Date().timeIntervalSince(startedAt) <= regionCheckStateMaxAge
     }
 
     private func intervalLabel(_ seconds: Int) -> String {
@@ -1143,6 +1224,8 @@ private final class StatusBarView: NSView {
     private let dividerPadding: CGFloat = 7
     private let flagGap: CGFloat = 5
     private let detailGap: CGFloat = 7
+    private let activityIndicatorGap: CGFloat = 5
+    private let activityIndicatorSize: CGFloat = 7
     private let primaryFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
     private let detailFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
 
@@ -1236,6 +1319,12 @@ private final class StatusBarView: NSView {
             let detailColor = segment.isError ? NSColor.systemRed : NSColor.secondaryLabelColor
             let detailText = attributed(detail, font: detailFont, color: detailColor)
             draw(detailText, atX: x, centerY: rect.midY + 0.4)
+            x += detailText.size().width
+        }
+
+        if segment.isLoading {
+            x += activityIndicatorGap
+            drawActivityIndicator(atX: x, centerY: rect.midY, color: segment.isError ? .systemRed : .controlAccentColor)
         }
     }
 
@@ -1253,6 +1342,31 @@ private final class StatusBarView: NSView {
         text.draw(in: NSRect(x: x, y: centerY - size.height / 2 - 0.5, width: size.width, height: size.height))
     }
 
+    private func drawActivityIndicator(atX x: CGFloat, centerY: CGFloat, color: NSColor) {
+        let rect = NSRect(
+            x: x,
+            y: centerY - activityIndicatorSize / 2 - 0.2,
+            width: activityIndicatorSize,
+            height: activityIndicatorSize
+        )
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        let radius = activityIndicatorSize / 2 - 0.7
+
+        let base = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
+        base.lineWidth = 1
+        base.stroke()
+
+        let rotation = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.85) / 0.85
+        let startAngle = CGFloat(rotation * 360)
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: startAngle + 265, clockwise: false)
+        arc.lineWidth = 1.35
+        arc.lineCapStyle = .round
+        color.withAlphaComponent(0.95).setStroke()
+        arc.stroke()
+    }
+
     private func segmentWidth(for segment: StatusSegment) -> CGFloat {
         var width = segmentPadding * 2
         width += attributed(segment.flag, font: primaryFont, color: .controlTextColor).size().width
@@ -1262,6 +1376,10 @@ private final class StatusBarView: NSView {
         if let detail = segment.detail {
             width += detailGap
             width += attributed(detail, font: detailFont, color: .secondaryLabelColor).size().width
+        }
+
+        if segment.isLoading {
+            width += activityIndicatorGap + activityIndicatorSize
         }
 
         return ceil(width)

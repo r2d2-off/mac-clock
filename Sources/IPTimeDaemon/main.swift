@@ -5,6 +5,7 @@ private let ipAPIURL = URL(string: "http://ip-api.com/json")!
 private let defaultStatusPath = "/Library/Application Support/IPTime/status.json"
 private let statusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["IPTIME_STATUS_PATH"] ?? defaultStatusPath)
 private let supportDirectoryURL = statusURL.deletingLastPathComponent()
+private let regionCheckStateURL = supportDirectoryURL.appendingPathComponent("check-state.json")
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let defaultRegionCheckInterval: TimeInterval = 600
@@ -118,6 +119,12 @@ private struct RecheckRequest: Decodable {
     let requestedAt: String
 }
 
+private struct RegionCheckState: Encodable {
+    let startedAt: String
+    let completedAt: String?
+    let trigger: String
+}
+
 private struct IPTimeConfig: Decodable {
     let regionCheckIntervalSeconds: Int
 }
@@ -211,7 +218,7 @@ private final class Runner {
 
     func run() async {
         if isDryRun || runOnce {
-            await runSingleCheck(activeUser: findActiveUser())
+            await runSingleCheck(activeUser: findActiveUser(), trigger: isDryRun ? "dry-run" : "manual")
             return
         }
 
@@ -236,10 +243,10 @@ private final class Runner {
             if await handleManualRecheckRequest(activeUser: activeUser) {
                 lastRegionCheck = Date()
             } else if consumeImmediateRegionCheckRequest(now: now) {
-                await runSingleCheck(activeUser: activeUser)
+                await runSingleCheck(activeUser: activeUser, trigger: "network")
                 lastRegionCheck = Date()
             } else if now.timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
-                await runSingleCheck(activeUser: activeUser)
+                await runSingleCheck(activeUser: activeUser, trigger: "scheduled")
                 lastRegionCheck = Date()
             }
 
@@ -309,7 +316,7 @@ private final class Runner {
         }
 
         try? FileManager.default.removeItem(at: requestURL)
-        await runSingleCheck(activeUser: activeUser)
+        await runSingleCheck(activeUser: activeUser, trigger: "manual")
         return true
     }
 
@@ -324,7 +331,13 @@ private final class Runner {
         return TimeInterval(config.regionCheckIntervalSeconds)
     }
 
-    private func runSingleCheck(activeUser: ActiveUser?) async {
+    private func runSingleCheck(activeUser: ActiveUser?, trigger: String) async {
+        let startedAt = timestamp()
+        writeRegionCheckState(startedAt: startedAt, completedAt: nil, trigger: trigger)
+        defer {
+            writeRegionCheckState(startedAt: startedAt, completedAt: timestamp(), trigger: trigger)
+        }
+
         do {
             let info = try await fetchIPInfo()
             let result = apply(info: info, activeUser: activeUser)
@@ -559,6 +572,18 @@ private final class Runner {
             try data.write(to: statusURL, options: .atomic)
         } catch {
             FileHandle.standardError.write(Data("Failed to write status: \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    private func writeRegionCheckState(startedAt: String, completedAt: String?, trigger: String) {
+        let state = RegionCheckState(startedAt: startedAt, completedAt: completedAt, trigger: trigger)
+
+        do {
+            try FileManager.default.createDirectory(at: supportDirectoryURL, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: regionCheckStateURL, options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data("Failed to write region check state: \(error.localizedDescription)\n".utf8))
         }
     }
 }

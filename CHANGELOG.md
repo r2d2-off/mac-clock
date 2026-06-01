@@ -3,6 +3,14 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.24 - 2026-06-01
+
+- Fixed rapid Wi-Fi switching after a network-triggered region check.
+- Network-triggered checks are no longer dropped when they happen inside the
+  throttle window; they are rescheduled for the next allowed time.
+- Reduced the minimum interval for network-triggered checks from 30 seconds to
+  10 seconds.
+
 ## v0.1.23 - 2026-06-01
 
 - Added a network fingerprint fallback in the root daemon.

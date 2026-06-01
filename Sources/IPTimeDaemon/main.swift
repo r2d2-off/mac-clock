@@ -10,7 +10,7 @@ private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == 
 private let regionCheckInterval: TimeInterval = 600
 private let networkFingerprintPollInterval: TimeInterval = 5
 private let networkChangeDebounceInterval: TimeInterval = 5
-private let networkChangeMinimumCheckInterval: TimeInterval = 30
+private let networkChangeMinimumCheckInterval: TimeInterval = 10
 private let updatePollIntervalNanoseconds: UInt64 = 1_000_000_000
 private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
 
@@ -272,7 +272,9 @@ private final class Runner {
         }
 
         immediateRegionCheckAfter = nil
-        guard now.timeIntervalSince(lastNetworkTriggeredRegionCheck) >= networkChangeMinimumCheckInterval else {
+        let nextAllowedCheck = lastNetworkTriggeredRegionCheck.addingTimeInterval(networkChangeMinimumCheckInterval)
+        guard now >= nextAllowedCheck else {
+            immediateRegionCheckAfter = nextAllowedCheck
             return false
         }
 

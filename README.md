@@ -15,6 +15,10 @@ rechecks when route, DNS, interface, or AirPort state changes. It updates the
 system timezone and safe user regional preferences, then writes status for the
 menu bar app.
 
+Network-triggered checks are debounced for 5 seconds and run at most once every
+10 seconds. If another network change happens inside that window, the daemon
+delays the recheck instead of dropping it.
+
 If something fails, the VPN/IP segment turns red and the error is shown in the
 menu.
 

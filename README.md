@@ -6,8 +6,10 @@ macOS menu bar clock for VPN work:
 [🇷🇺 Mon Jun 1 19:07    🇳🇱 18:07  203.0.113.42]
 ```
 
-The first segment is always Moscow time (`Europe/Moscow`). The second segment
-is the current system time after the VPN-region timezone is applied. A root
+The first segment is the configurable home/team clock. It defaults to Moscow
+time (`Europe/Moscow`) and can be changed to a preset city timezone or a fixed
+UTC offset under `Settings -> Home Clock`. The second segment is the current
+system time after the VPN-region timezone is applied. A root
 LaunchDaemon checks the external IP region every 10 minutes, and also rechecks
 shortly after macOS reports a network, Wi-Fi, route, or DNS change. As a
 fallback, it compares the current network fingerprint every 5 seconds and
@@ -22,8 +24,13 @@ delays the recheck instead of dropping it.
 Use `Recheck IP Now` from the menu to force an immediate check after connecting
 a VPN manually. While any IP check is running, manual, network-triggered, or
 scheduled, the VPN segment keeps its normal layout and shows a small animated
-ring next to the IP address. The menu item is temporarily disabled while a check
-is already running to avoid duplicate requests.
+pulsing dot next to the IP address. The menu item is temporarily disabled while
+a check is already running to avoid duplicate requests.
+
+Use `Settings -> Home Clock` to change the left clock. `Presets` uses real IANA
+timezones with country flags, so daylight saving time is handled correctly.
+`Fixed UTC Offset` uses compact team-time offsets such as `UTC+03:00` or
+`UTC-07:00` without changing the macOS system timezone.
 
 Use `Settings -> IP Check Interval` to choose the regular background interval:
 1, 5, 10, 15, 30, or 60 minutes. The daemon reads interval changes live.

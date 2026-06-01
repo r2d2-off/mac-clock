@@ -3,6 +3,18 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.28 - 2026-06-01
+
+- Added `Settings -> Home Clock` for the left menu bar clock.
+- Added curated city timezone presets with flags for Moscow, California, New
+  York, Dubai, Shanghai, Singapore, Berlin, Amsterdam, Paris, London, Warsaw,
+  and Tokyo.
+- Added compact fixed UTC offset choices for team clocks that do not need a
+  specific city timezone.
+- The home clock config is stored in the user `config.json` and does not change
+  the macOS system timezone.
+- Replaced the IP refresh spinner with a quieter pulsing dot next to the IP.
+
 ## v0.1.27 - 2026-06-01
 
 - Reworked IP recheck progress display.

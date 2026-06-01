@@ -124,6 +124,14 @@ private struct RecheckRequest: Codable {
     let requestedAt: String
 }
 
+private struct HomeClockConfig: Codable {
+    let mode: String
+    let label: String
+    let countryCode: String?
+    let timeZoneIdentifier: String?
+    let offsetMinutes: Int?
+}
+
 private struct RegionCheckState: Codable {
     let startedAt: String
     let completedAt: String?
@@ -132,7 +140,55 @@ private struct RegionCheckState: Codable {
 
 private struct IPTimeConfig: Codable {
     let regionCheckIntervalSeconds: Int
+    let homeClock: HomeClockConfig?
 }
+
+private struct HomeClockOption {
+    let id: String
+    let menuTitle: String
+    let config: HomeClockConfig
+}
+
+private struct ResolvedHomeClock {
+    let symbol: String
+    let label: String
+    let timeZone: TimeZone
+}
+
+private enum HomeClockMode {
+    static let timeZone = "timeZone"
+    static let fixedOffset = "fixedOffset"
+}
+
+private let defaultHomeClockConfig = HomeClockConfig(
+    mode: HomeClockMode.timeZone,
+    label: "Moscow",
+    countryCode: "RU",
+    timeZoneIdentifier: "Europe/Moscow",
+    offsetMinutes: nil
+)
+
+private let homeClockPresetOptions = [
+    HomeClockOption(id: "tz:Europe/Moscow", menuTitle: "Moscow", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Moscow", countryCode: "RU", timeZoneIdentifier: "Europe/Moscow", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:America/Los_Angeles", menuTitle: "California", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "California", countryCode: "US", timeZoneIdentifier: "America/Los_Angeles", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:America/New_York", menuTitle: "New York", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "New York", countryCode: "US", timeZoneIdentifier: "America/New_York", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Asia/Dubai", menuTitle: "Dubai", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Dubai", countryCode: "AE", timeZoneIdentifier: "Asia/Dubai", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Asia/Shanghai", menuTitle: "Shanghai", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Shanghai", countryCode: "CN", timeZoneIdentifier: "Asia/Shanghai", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Asia/Singapore", menuTitle: "Singapore", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Singapore", countryCode: "SG", timeZoneIdentifier: "Asia/Singapore", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Europe/Berlin", menuTitle: "Berlin", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Berlin", countryCode: "DE", timeZoneIdentifier: "Europe/Berlin", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Europe/Amsterdam", menuTitle: "Amsterdam", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Amsterdam", countryCode: "NL", timeZoneIdentifier: "Europe/Amsterdam", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Europe/Paris", menuTitle: "Paris", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Paris", countryCode: "FR", timeZoneIdentifier: "Europe/Paris", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Europe/London", menuTitle: "London", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "London", countryCode: "GB", timeZoneIdentifier: "Europe/London", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Europe/Warsaw", menuTitle: "Warsaw", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Warsaw", countryCode: "PL", timeZoneIdentifier: "Europe/Warsaw", offsetMinutes: nil)),
+    HomeClockOption(id: "tz:Asia/Tokyo", menuTitle: "Tokyo", config: HomeClockConfig(mode: HomeClockMode.timeZone, label: "Tokyo", countryCode: "JP", timeZoneIdentifier: "Asia/Tokyo", offsetMinutes: nil))
+]
+
+private let fixedUTCOffsetOptions = [
+    -720, -660, -600, -570, -540, -480, -420, -360, -300, -240,
+    -210, -180, -150, -120, -60, 0, 60, 120, 180, 210, 240, 270,
+    300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630,
+    660, 720, 765, 780, 825, 840
+]
 
 private enum UpdateState {
     case idle
@@ -161,7 +217,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var regionCheckState: RegionCheckState?
     private var statusReadError: String?
     private var lastStatusRead = Date.distantPast
-    private var config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds)
+    private var config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds, homeClock: defaultHomeClockConfig)
     private var manualRecheckRequestedAt: Date?
     private var manualRecheckError: String?
     private var updateState: UpdateState = .idle
@@ -184,7 +240,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE MMM d"
-        formatter.timeZone = moscowTimeZone
         return formatter
     }()
 
@@ -348,7 +403,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        config = IPTimeConfig(regionCheckIntervalSeconds: normalizedRegionCheckInterval(seconds))
+        config = IPTimeConfig(
+            regionCheckIntervalSeconds: normalizedRegionCheckInterval(seconds),
+            homeClock: normalizedHomeClock(config.homeClock)
+        )
         do {
             try writeConfig()
             manualRecheckError = nil
@@ -357,6 +415,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         buildMenu()
+    }
+
+    @objc private func setHomeClock(_ sender: NSMenuItem) {
+        guard let optionID = sender.representedObject as? String,
+              let homeClock = homeClockConfig(for: optionID) else {
+            return
+        }
+
+        config = IPTimeConfig(
+            regionCheckIntervalSeconds: normalizedRegionCheckInterval(config.regionCheckIntervalSeconds),
+            homeClock: normalizedHomeClock(homeClock)
+        )
+
+        do {
+            try writeConfig()
+            manualRecheckError = nil
+        } catch {
+            manualRecheckError = "Failed to save settings: \(error.localizedDescription)"
+        }
+
+        buildMenu()
+        updateStatusTitle()
     }
 
     @objc private func checkForUpdatesFromMenu() {
@@ -449,11 +529,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadConfig() {
         guard let data = try? Data(contentsOf: configURL),
               let decoded = try? JSONDecoder().decode(IPTimeConfig.self, from: data) else {
-            config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds)
+            config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds, homeClock: defaultHomeClockConfig)
             return
         }
 
-        config = IPTimeConfig(regionCheckIntervalSeconds: normalizedRegionCheckInterval(decoded.regionCheckIntervalSeconds))
+        config = IPTimeConfig(
+            regionCheckIntervalSeconds: normalizedRegionCheckInterval(decoded.regionCheckIntervalSeconds),
+            homeClock: normalizedHomeClock(decoded.homeClock)
+        )
     }
 
     private func loadPendingManualRecheckState() {
@@ -729,6 +812,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func settingsMenu() -> NSMenu {
         let menu = NSMenu()
+
+        let homeClockMenuItem = NSMenuItem(title: "Home Clock", action: nil, keyEquivalent: "")
+        homeClockMenuItem.submenu = homeClockMenu()
+        menu.addItem(homeClockMenuItem)
+
+        menu.addItem(.separator())
+
         let intervalMenuItem = NSMenuItem(title: "IP Check Interval", action: nil, keyEquivalent: "")
         let intervalMenu = NSMenu()
 
@@ -742,6 +832,55 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         intervalMenuItem.submenu = intervalMenu
         menu.addItem(intervalMenuItem)
+        return menu
+    }
+
+    private func homeClockMenu() -> NSMenu {
+        let menu = NSMenu()
+        let current = NSMenuItem(title: "Current: \(homeClockDescription())", action: nil, keyEquivalent: "")
+        current.isEnabled = false
+        menu.addItem(current)
+        menu.addItem(.separator())
+
+        let presets = NSMenuItem(title: "Presets", action: nil, keyEquivalent: "")
+        presets.submenu = homeClockPresetsMenu()
+        menu.addItem(presets)
+
+        let offsets = NSMenuItem(title: "Fixed UTC Offset", action: nil, keyEquivalent: "")
+        offsets.submenu = fixedUTCOffsetMenu()
+        menu.addItem(offsets)
+
+        return menu
+    }
+
+    private func homeClockPresetsMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        for option in homeClockPresetOptions {
+            let countryFlag = option.config.countryCode.map(flag(for:)) ?? ""
+            let title = [countryFlag, option.menuTitle].filter { !$0.isEmpty }.joined(separator: " ")
+            let item = NSMenuItem(title: title, action: #selector(setHomeClock(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option.id
+            item.state = homeClockID(normalizedHomeClock(config.homeClock)) == option.id ? .on : .off
+            menu.addItem(item)
+        }
+
+        return menu
+    }
+
+    private func fixedUTCOffsetMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        for minutes in fixedUTCOffsetOptions {
+            let optionID = "offset:\(minutes)"
+            let item = NSMenuItem(title: utcOffsetMenuLabel(minutes), action: #selector(setHomeClock(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = optionID
+            item.state = homeClockID(normalizedHomeClock(config.homeClock)) == optionID ? .on : .off
+            menu.addItem(item)
+        }
+
         return menu
     }
 
@@ -782,7 +921,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func detailRows() -> [String] {
-        var rows: [String] = ["Managed by LaunchDaemon every \(intervalLabel(config.regionCheckIntervalSeconds))"]
+        var rows: [String] = [
+            "Managed by LaunchDaemon every \(intervalLabel(config.regionCheckIntervalSeconds))",
+            "Home clock: \(homeClockDescription())"
+        ]
 
         if let ip = nonEmpty(status?.ip) {
             rows.append("External IP: \(ip)")
@@ -987,11 +1129,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func statusDisplay() -> StatusDisplay {
         let now = Date()
+        let homeClock = resolvedHomeClock()
         let localText = formattedTime(now, in: .autoupdatingCurrent)
-        let moscowText = formattedTime(now, in: moscowTimeZone)
-        let moscowDate = dateFormatter.string(from: now)
+        let homeText = formattedTime(now, in: homeClock.timeZone)
+        let homeDate = formattedDate(now, in: homeClock.timeZone)
         var segments = [
-            StatusSegment(flag: "🇷🇺", primary: moscowText, detail: moscowDate, detailFirst: true, isError: false),
+            StatusSegment(flag: homeClock.symbol, primary: homeText, detail: homeDate, detailFirst: true, isError: false),
             StatusSegment(
                 flag: flag(for: countryCode),
                 primary: localText,
@@ -1012,6 +1155,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func formattedDate(_ date: Date, in timeZone: TimeZone) -> String {
+        dateFormatter.timeZone = timeZone
+        return dateFormatter.string(from: date)
+    }
+
     private func formattedTime(_ date: Date, in timeZone: TimeZone) -> String {
         timeFormatter.timeZone = timeZone
         timeFormatter.dateFormat = store.bool(forKey: DefaultsKey.use24Hour) ? "HH:mm" : "h:mm a"
@@ -1020,6 +1168,100 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func shortTime(_ date: Date) -> String {
         formattedTime(date, in: .autoupdatingCurrent)
+    }
+
+    private func resolvedHomeClock() -> ResolvedHomeClock {
+        let homeClock = normalizedHomeClock(config.homeClock)
+
+        if homeClock.mode == HomeClockMode.fixedOffset,
+           let offsetMinutes = homeClock.offsetMinutes,
+           let timeZone = TimeZone(secondsFromGMT: offsetMinutes * 60) {
+            return ResolvedHomeClock(
+                symbol: shortUTCOffsetLabel(offsetMinutes),
+                label: homeClock.label,
+                timeZone: timeZone
+            )
+        }
+
+        if let identifier = homeClock.timeZoneIdentifier,
+           let timeZone = TimeZone(identifier: identifier) {
+            let symbol = homeClock.countryCode.map(flag(for:)) ?? shortUTCOffsetLabel(timeZone.secondsFromGMT() / 60)
+            return ResolvedHomeClock(symbol: symbol, label: homeClock.label, timeZone: timeZone)
+        }
+
+        return ResolvedHomeClock(symbol: "🇷🇺", label: "Moscow", timeZone: moscowTimeZone)
+    }
+
+    private func normalizedHomeClock(_ homeClock: HomeClockConfig?) -> HomeClockConfig {
+        guard let homeClock else {
+            return defaultHomeClockConfig
+        }
+
+        if homeClock.mode == HomeClockMode.fixedOffset,
+           let offsetMinutes = homeClock.offsetMinutes,
+           fixedUTCOffsetOptions.contains(offsetMinutes),
+           TimeZone(secondsFromGMT: offsetMinutes * 60) != nil {
+            return HomeClockConfig(
+                mode: HomeClockMode.fixedOffset,
+                label: nonEmpty(homeClock.label) ?? utcOffsetMenuLabel(offsetMinutes),
+                countryCode: nil,
+                timeZoneIdentifier: nil,
+                offsetMinutes: offsetMinutes
+            )
+        }
+
+        guard let identifier = nonEmpty(homeClock.timeZoneIdentifier),
+              TimeZone(identifier: identifier) != nil else {
+            return defaultHomeClockConfig
+        }
+
+        return HomeClockConfig(
+            mode: HomeClockMode.timeZone,
+            label: nonEmpty(homeClock.label) ?? identifier.replacingOccurrences(of: "_", with: " "),
+            countryCode: nonEmpty(homeClock.countryCode)?.uppercased(),
+            timeZoneIdentifier: identifier,
+            offsetMinutes: nil
+        )
+    }
+
+    private func homeClockConfig(for optionID: String) -> HomeClockConfig? {
+        if let preset = homeClockPresetOptions.first(where: { $0.id == optionID }) {
+            return preset.config
+        }
+
+        guard optionID.hasPrefix("offset:"),
+              let minutes = Int(optionID.dropFirst("offset:".count)),
+              fixedUTCOffsetOptions.contains(minutes) else {
+            return nil
+        }
+
+        return HomeClockConfig(
+            mode: HomeClockMode.fixedOffset,
+            label: utcOffsetMenuLabel(minutes),
+            countryCode: nil,
+            timeZoneIdentifier: nil,
+            offsetMinutes: minutes
+        )
+    }
+
+    private func homeClockID(_ homeClock: HomeClockConfig) -> String {
+        let normalized = normalizedHomeClock(homeClock)
+        if normalized.mode == HomeClockMode.fixedOffset, let offsetMinutes = normalized.offsetMinutes {
+            return "offset:\(offsetMinutes)"
+        }
+
+        return "tz:\(normalized.timeZoneIdentifier ?? defaultHomeClockConfig.timeZoneIdentifier ?? "Europe/Moscow")"
+    }
+
+    private func homeClockDescription() -> String {
+        let homeClock = normalizedHomeClock(config.homeClock)
+        if homeClock.mode == HomeClockMode.fixedOffset, let offsetMinutes = homeClock.offsetMinutes {
+            return "\(utcOffsetMenuLabel(offsetMinutes)) (fixed offset)"
+        }
+
+        let countryFlag = homeClock.countryCode.map(flag(for:)) ?? ""
+        let identifier = homeClock.timeZoneIdentifier ?? "Europe/Moscow"
+        return [countryFlag, homeClock.label].filter { !$0.isEmpty }.joined(separator: " ") + " (\(identifier))"
     }
 
     private var isManualRecheckInProgress: Bool {
@@ -1085,6 +1327,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         default:
             return "\(minutes) minutes"
         }
+    }
+
+    private func utcOffsetMenuLabel(_ minutes: Int) -> String {
+        let sign = minutes >= 0 ? "+" : "-"
+        let absoluteMinutes = abs(minutes)
+        return String(format: "UTC%@%02d:%02d", sign, absoluteMinutes / 60, absoluteMinutes % 60)
+    }
+
+    private func shortUTCOffsetLabel(_ minutes: Int) -> String {
+        let sign = minutes >= 0 ? "+" : "-"
+        let absoluteMinutes = abs(minutes)
+        if absoluteMinutes % 60 == 0 {
+            return "UTC\(sign)\(absoluteMinutes / 60)"
+        }
+
+        return String(format: "UTC%@%d:%02d", sign, absoluteMinutes / 60, absoluteMinutes % 60)
     }
 
     private func nonEmpty(_ value: String?) -> String? {
@@ -1343,28 +1601,20 @@ private final class StatusBarView: NSView {
     }
 
     private func drawActivityIndicator(atX x: CGFloat, centerY: CGFloat, color: NSColor) {
-        let rect = NSRect(
-            x: x,
-            y: centerY - activityIndicatorSize / 2 - 0.2,
-            width: activityIndicatorSize,
-            height: activityIndicatorSize
-        )
-        let center = NSPoint(x: rect.midX, y: rect.midY)
-        let radius = activityIndicatorSize / 2 - 0.7
+        let center = NSPoint(x: x + activityIndicatorSize / 2, y: centerY - 0.2)
+        let radius = activityIndicatorSize / 2
+        let phase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2
+        let pulse = 0.5 + 0.5 * sin(CGFloat(phase) * .pi * 2)
+        let dotRadius = radius * (0.55 + 0.25 * pulse)
+        let dot = NSBezierPath(ovalIn: NSRect(
+            x: center.x - dotRadius,
+            y: center.y - dotRadius,
+            width: dotRadius * 2,
+            height: dotRadius * 2
+        ))
 
-        let base = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
-        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
-        base.lineWidth = 1
-        base.stroke()
-
-        let rotation = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.85) / 0.85
-        let startAngle = CGFloat(rotation * 360)
-        let arc = NSBezierPath()
-        arc.appendArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: startAngle + 265, clockwise: false)
-        arc.lineWidth = 1.35
-        arc.lineCapStyle = .round
-        color.withAlphaComponent(0.95).setStroke()
-        arc.stroke()
+        color.withAlphaComponent(0.45 + 0.5 * pulse).setFill()
+        dot.fill()
     }
 
     private func segmentWidth(for segment: StatusSegment) -> CGFloat {

@@ -104,6 +104,14 @@ private enum UpdateState {
     case failed(String)
 }
 
+private enum UpdateCheckOutcome {
+    case alreadyChecking
+    case updateInProgress(String)
+    case upToDate(String)
+    case available(UpdateCandidate)
+    case failed(String)
+}
+
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -228,7 +236,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func checkForUpdatesFromMenu() {
         Task { [weak self] in
-            await self?.checkForUpdates(silent: false)
+            guard let self else {
+                return
+            }
+
+            let outcome = await self.checkForUpdates(silent: false)
+            self.showUpdateCheckAlert(outcome)
         }
     }
 
@@ -610,13 +623,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return rows
     }
 
-    private func checkForUpdates(silent: Bool) async {
+    @discardableResult
+    private func checkForUpdates(silent: Bool) async -> UpdateCheckOutcome {
         guard !updateCheckInFlight else {
-            return
+            return .alreadyChecking
         }
 
-        if case .requested = updateState {
-            return
+        if case .requested(let version) = updateState {
+            return .updateInProgress(version)
         }
 
         updateCheckInFlight = true
@@ -634,23 +648,65 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let release = try await fetchLatestRelease()
             guard let candidate = updateCandidate(from: release) else {
+                let message = "No \(updateAssetName) asset in latest release"
                 if !silent {
-                    updateState = .failed("No \(updateAssetName) asset in latest release")
+                    updateState = .failed(message)
                 }
-                return
+                return .failed(message)
             }
 
             if isVersion(candidate.version, newerThan: currentAppVersion) {
                 updateState = .available(candidate)
+                return .available(candidate)
             } else if !silent {
                 updateState = .upToDate(candidate.version)
             } else if case .available = updateState {
                 updateState = .upToDate(candidate.version)
             }
+
+            return .upToDate(candidate.version)
         } catch {
+            let message = error.localizedDescription
             if !silent {
-                updateState = .failed(error.localizedDescription)
+                updateState = .failed(message)
             }
+            return .failed(message)
+        }
+    }
+
+    private func showUpdateCheckAlert(_ outcome: UpdateCheckOutcome) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+
+        switch outcome {
+        case .alreadyChecking:
+            alert.messageText = "Checking for Updates"
+            alert.informativeText = "An update check is already running."
+            alert.addButton(withTitle: "OK")
+        case .updateInProgress(let version):
+            alert.messageText = "Update in Progress"
+            alert.informativeText = "IP Time is already installing \(version)."
+            alert.addButton(withTitle: "OK")
+        case .upToDate(let version):
+            alert.messageText = "IP Time is Up to Date"
+            alert.informativeText = "Installed version: \(currentVersionLabel)\nLatest version: \(version)"
+            alert.addButton(withTitle: "OK")
+        case .available(let candidate):
+            alert.messageText = "Update Available"
+            alert.informativeText = "\(candidate.version) is available.\nInstalled version: \(currentVersionLabel)"
+            alert.addButton(withTitle: "Install Update")
+            alert.addButton(withTitle: "Later")
+        case .failed(let message):
+            alert.alertStyle = .warning
+            alert.messageText = "Update Check Failed"
+            alert.informativeText = message
+            alert.addButton(withTitle: "OK")
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if case .available = outcome, response == .alertFirstButtonReturn {
+            installUpdateFromMenu()
         }
     }
 

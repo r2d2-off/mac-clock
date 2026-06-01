@@ -15,11 +15,14 @@ private let userSupportURL = FileManager.default.homeDirectoryForCurrentUser
 private let updateRequestURL = userSupportURL.appendingPathComponent("update-request.json")
 private let updateResultURL = userSupportURL.appendingPathComponent("update-result.json")
 private let recheckRequestURL = userSupportURL.appendingPathComponent("recheck-request.json")
+private let stopRequestURL = userSupportURL.appendingPathComponent("stop-request.json")
 private let configURL = userSupportURL.appendingPathComponent("config.json")
 private let regionSyncRestoreStateURL = userSupportURL.appendingPathComponent("region-sync-restore-state.json")
 private let userPreferenceBackupURL = userSupportURL.appendingPathComponent("original-user-preferences.json")
 private let userPreferenceRestoreScriptURL = userSupportURL.appendingPathComponent("restore-user-preferences.sh")
 private let moscowTimeZone = TimeZone(identifier: "Europe/Moscow")!
+private let launchDaemonLabel = "local.iptime.daemon"
+private let launchDaemonURL = URL(fileURLWithPath: "/Library/LaunchDaemons/\(launchDaemonLabel).plist")
 private let launchAgentLabel = "local.iptime.menubar"
 private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
@@ -155,6 +158,10 @@ private struct UpdateResult: Codable {
 }
 
 private struct RecheckRequest: Codable {
+    let requestedAt: String
+}
+
+private struct StopRequest: Codable {
     let requestedAt: String
 }
 
@@ -441,6 +448,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: IPTimeStatus?
     private var regionCheckState: RegionCheckState?
     private var statusReadError: String?
+    private var daemonStartError: String?
     private var lastStatusRead = Date.distantPast
     private var config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds, homeClock: defaultHomeClockConfig)
     private var manualRecheckRequestedAt: Date?
@@ -479,6 +487,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         ensureLaunchAgent()
+        clearStopRequest()
         loadConfig()
         loadPendingManualRecheckState()
 
@@ -494,6 +503,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusView = statusView
         statusItem.view = statusView
 
+        ensureLaunchDaemonRunning()
         loadStatus()
         loadRegionCheckState()
         loadPendingUpdateState()
@@ -768,7 +778,61 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
+        restoreAndStopBeforeQuit()
         NSApp.terminate(nil)
+    }
+
+    private func restoreAndStopBeforeQuit() {
+        timer?.invalidate()
+        regionalPreferencesQueue.sync {
+            _ = performUserRegionalPreferencesSync(.restore)
+        }
+        requestDaemonStop()
+        removeLaunchAgent()
+    }
+
+    private func requestDaemonStop() {
+        do {
+            try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+            let request = StopRequest(requestedAt: timestamp())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(request).write(to: stopRequestURL, options: .atomic)
+        } catch {
+            statusReadError = "Failed to request daemon stop: \(error.localizedDescription)"
+        }
+    }
+
+    private func clearStopRequest() {
+        try? FileManager.default.removeItem(at: stopRequestURL)
+    }
+
+    private func removeLaunchAgent() {
+        try? FileManager.default.removeItem(at: launchAgentURL)
+    }
+
+    private func ensureLaunchDaemonRunning() {
+        daemonStartError = nil
+        guard FileManager.default.fileExists(atPath: launchDaemonURL.path),
+              !isLaunchDaemonRunning() else {
+            return
+        }
+
+        let command = [
+            "/bin/launchctl enable system/\(launchDaemonLabel) >/dev/null 2>&1 || true",
+            "/bin/launchctl bootstrap system \(shellQuoted(launchDaemonURL.path)) >/dev/null 2>&1 || true",
+            "/bin/launchctl kickstart -k system/\(launchDaemonLabel) >/dev/null 2>&1 || true"
+        ].joined(separator: "; ")
+        let script = "do shell script \(appleScriptString(command)) with administrator privileges"
+        let result = runProcess(path: "/usr/bin/osascript", arguments: ["-e", script])
+        if !result.success {
+            daemonStartError = "Background service is stopped: \(result.message)"
+            statusReadError = daemonStartError
+        }
+    }
+
+    private func isLaunchDaemonRunning() -> Bool {
+        runProcess(path: "/bin/launchctl", arguments: ["print", "system/\(launchDaemonLabel)"]).success
     }
 
     private func showMenu(from view: NSView) {
@@ -782,9 +846,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let data = try Data(contentsOf: statusURL)
             status = try JSONDecoder().decode(IPTimeStatus.self, from: data)
-            statusReadError = nil
+            statusReadError = daemonStartError
             clearManualRecheckIfCompleted()
-            syncUserRegionalPreferences()
+            if daemonStartError == nil {
+                syncUserRegionalPreferences()
+            }
         } catch {
             status = nil
             statusReadError = "No daemon status yet: \(error.localizedDescription)"
@@ -2264,6 +2330,14 @@ private func runProcess(path: String, arguments: [String]) -> (success: Bool, me
 
 private func shellQuoted(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
+private func appleScriptString(_ value: String) -> String {
+    let escaped = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    return "\"\(escaped)\""
 }
 
 private struct IPTimeError: LocalizedError {

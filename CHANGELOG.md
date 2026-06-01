@@ -5,6 +5,14 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.40 - 2026-06-02
+
+- Changes `Quit IP Time` to restore saved user preferences, request the root
+  daemon to restore saved system preferences, disable and stop the
+  LaunchDaemon, remove the LaunchAgent, and then terminate the menu bar app.
+- Starts the root LaunchDaemon again on manual app launch when it was stopped
+  by Quit, using the standard macOS administrator prompt.
+
 ## v0.1.39 - 2026-06-02
 
 - Restores the Home Clock weekday/date display while no regional changes are

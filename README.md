@@ -39,6 +39,14 @@ comet indicator next to the IP address. When the check finishes, it briefly
 draws a green checkmark. The menu item is temporarily disabled while a check is
 already running to avoid duplicate requests.
 
+`Quit IP Time` is a full stop for the current app installation: it restores
+saved user preferences, asks the root daemon to restore saved system
+preferences, disables and stops the LaunchDaemon, removes the LaunchAgent, and
+closes the menu bar app. Opening `IP Time.app` again recreates the LaunchAgent
+and starts the LaunchDaemon again. If the daemon was stopped, macOS asks for an
+administrator password because starting a root LaunchDaemon requires elevated
+privileges.
+
 Use `Settings -> Home Clock` to change the left clock. `Presets` uses real IANA
 timezones with country flags, so daylight saving time is handled correctly.
 `Fixed UTC Offset` uses compact team-time offsets such as `UTC+03:00` or
@@ -187,6 +195,7 @@ daemon binary so future self-updates can restart cleanly.
 ~/Library/Application Support/IPTime/original-user-preferences.json
 ~/Library/Application Support/IPTime/restore-user-preferences.sh
 ~/Library/Application Support/IPTime/recheck-request.json
+~/Library/Application Support/IPTime/stop-request.json
 ~/Library/Application Support/IPTime/update-request.json
 ~/Library/Application Support/IPTime/update-result.json
 /Library/Logs/IPTimeDaemon.out.log

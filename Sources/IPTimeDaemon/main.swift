@@ -10,6 +10,8 @@ private let regionCheckStateURL = supportDirectoryURL.appendingPathComponent("ch
 private let systemPreferenceBackupURL = supportDirectoryURL.appendingPathComponent("original-system-preferences.json")
 private let systemPreferenceRestoreScriptURL = supportDirectoryURL.appendingPathComponent("restore-system-preferences.sh")
 private let systemRegionSyncRestoreStateURL = supportDirectoryURL.appendingPathComponent("region-sync-restore-state.json")
+private let launchDaemonLabel = "local.iptime.daemon"
+private let launchDaemonURL = URL(fileURLWithPath: "/Library/LaunchDaemons/\(launchDaemonLabel).plist")
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
 private let defaultRegionCheckInterval: TimeInterval = 600
@@ -131,6 +133,10 @@ private struct UpdateResult: Encodable {
 }
 
 private struct RecheckRequest: Decodable {
+    let requestedAt: String
+}
+
+private struct StopRequest: Decodable {
     let requestedAt: String
 }
 
@@ -311,7 +317,9 @@ private final class Runner {
             let now = Date()
             let activeUser = activeUser(now: now)
 
-            if await handleManualRecheckRequest(activeUser: activeUser) {
+            if handleStopRequest(activeUser: activeUser) {
+                return
+            } else if await handleManualRecheckRequest(activeUser: activeUser) {
                 lastRegionCheck = Date()
             } else {
                 let regionCheckInterval = configuredRegionCheckInterval(activeUser: activeUser)
@@ -420,6 +428,43 @@ private final class Runner {
         cancelImmediateRegionCheckRequest()
         refreshNetworkFingerprintBaseline(now: Date())
         return true
+    }
+
+    private func handleStopRequest(activeUser: ActiveUser?) -> Bool {
+        guard let activeUser else {
+            return false
+        }
+
+        let requestURL = stopRequestURL(for: activeUser)
+        guard FileManager.default.fileExists(atPath: requestURL.path) else {
+            return false
+        }
+
+        if let data = try? Data(contentsOf: requestURL) {
+            _ = try? JSONDecoder().decode(StopRequest.self, from: data)
+        }
+
+        try? FileManager.default.removeItem(at: requestURL)
+        cancelImmediateRegionCheckRequest()
+
+        if let error = restoreOriginalSystemPreferencesIfNeeded() {
+            writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: "Failed to stop IP Time: \(error)")
+            return false
+        }
+
+        let disableResult = runProcess(path: "/bin/launchctl", arguments: ["disable", "system/\(launchDaemonLabel)"])
+        if !disableResult.success {
+            writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: "Failed to disable IP Time daemon: \(disableResult.message)")
+            return false
+        }
+
+        let result = runProcess(path: "/bin/launchctl", arguments: ["bootout", "system", launchDaemonURL.path])
+        if !result.success {
+            writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: "Failed to stop IP Time daemon: \(result.message)")
+            return false
+        }
+
+        exit(0)
     }
 
     private func configuredRegionCheckInterval(activeUser: ActiveUser?) -> TimeInterval {
@@ -988,6 +1033,10 @@ private func updateResultURL(for user: ActiveUser) -> URL {
 
 private func recheckRequestURL(for user: ActiveUser) -> URL {
     userSupportDirectoryURL(for: user).appendingPathComponent("recheck-request.json")
+}
+
+private func stopRequestURL(for user: ActiveUser) -> URL {
+    userSupportDirectoryURL(for: user).appendingPathComponent("stop-request.json")
 }
 
 private func configURL(for user: ActiveUser) -> URL {

@@ -142,7 +142,54 @@ private struct RegionCheckState: Encodable {
 
 private struct IPTimeConfig: Decodable {
     let regionCheckIntervalSeconds: Int
-    let regionSyncEnabled: Bool?
+    let regionalPermissions: RegionalPermissions?
+}
+
+private struct RegionalPermissions: Decodable {
+    let timeZone: Bool
+    let locale: Bool
+    let measurementUnits: Bool
+    let temperatureUnit: Bool
+    let firstWeekday: Bool
+
+    static let none = RegionalPermissions(
+        timeZone: false,
+        locale: false,
+        measurementUnits: false,
+        temperatureUnit: false,
+        firstWeekday: false
+    )
+
+    init(
+        timeZone: Bool = false,
+        locale: Bool = false,
+        measurementUnits: Bool = false,
+        temperatureUnit: Bool = false,
+        firstWeekday: Bool = false
+    ) {
+        self.timeZone = timeZone
+        self.locale = locale
+        self.measurementUnits = measurementUnits
+        self.temperatureUnit = temperatureUnit
+        self.firstWeekday = firstWeekday
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timeZone
+        case locale
+        case measurementUnits
+        case temperatureUnit
+        case firstWeekday
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timeZone = try container.decodeIfPresent(Bool.self, forKey: .timeZone) ?? false
+        locale = try container.decodeIfPresent(Bool.self, forKey: .locale) ?? false
+        measurementUnits = try container.decodeIfPresent(Bool.self, forKey: .measurementUnits) ?? false
+        temperatureUnit = try container.decodeIfPresent(Bool.self, forKey: .temperatureUnit) ?? false
+        firstWeekday = try container.decodeIfPresent(Bool.self, forKey: .firstWeekday) ?? false
+    }
 }
 
 private struct RegionSyncRestoreState: Encodable {
@@ -263,16 +310,9 @@ private final class Runner {
         while true {
             let now = Date()
             let activeUser = activeUser(now: now)
-            let regionSyncEnabled = isRegionSyncEnabled(activeUser: activeUser)
 
             if await handleManualRecheckRequest(activeUser: activeUser) {
                 lastRegionCheck = Date()
-            } else if !regionSyncEnabled {
-                cancelImmediateRegionCheckRequest()
-                if needsSystemRegionSyncRestore() {
-                    await runSingleCheck(activeUser: activeUser, trigger: "disabled")
-                    lastRegionCheck = Date()
-                }
             } else {
                 let regionCheckInterval = configuredRegionCheckInterval(activeUser: activeUser)
                 pollNetworkFingerprint(now: now)
@@ -393,23 +433,14 @@ private final class Runner {
         return TimeInterval(config.regionCheckIntervalSeconds)
     }
 
-    private func isRegionSyncEnabled(activeUser: ActiveUser?) -> Bool {
+    private func regionalPermissions(activeUser: ActiveUser?) -> RegionalPermissions {
         guard let activeUser,
               let data = try? Data(contentsOf: configURL(for: activeUser)),
               let config = try? JSONDecoder().decode(IPTimeConfig.self, from: data) else {
-            return true
+            return .none
         }
 
-        return config.regionSyncEnabled ?? true
-    }
-
-    private func needsSystemRegionSyncRestore() -> Bool {
-        guard !isDryRun,
-              FileManager.default.fileExists(atPath: systemPreferenceRestoreScriptURL.path) else {
-            return false
-        }
-
-        return !FileManager.default.fileExists(atPath: systemRegionSyncRestoreStateURL.path)
+        return config.regionalPermissions ?? .none
     }
 
     private func runSingleCheck(activeUser: ActiveUser?, trigger: String) async {
@@ -419,19 +450,9 @@ private final class Runner {
             writeRegionCheckState(startedAt: startedAt, completedAt: timestamp(), trigger: trigger)
         }
 
-        guard isRegionSyncEnabled(activeUser: activeUser) else {
-            let error = isDryRun ? nil : restoreOriginalSystemPreferencesIfNeeded()
-            writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error)
-            return
-        }
-
-        if !isDryRun {
-            clearRegionSyncRestoreState()
-        }
-
         do {
             let info = try await fetchIPInfo()
-            let result = apply(info: info)
+            let result = apply(info: info, permissions: regionalPermissions(activeUser: activeUser))
             writeStatus(info: info, activeUser: activeUser, locale: result.locale, rule: result.rule, error: result.error)
         } catch {
             writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error.localizedDescription)
@@ -601,21 +622,26 @@ private final class Runner {
         _ = runAsUser(activeUser, arguments: ["open", appDestinationURL.path])
     }
 
-    private func apply(info: IPInfo) -> ApplyResult {
+    private func apply(info: IPInfo, permissions: RegionalPermissions) -> ApplyResult {
         let country = info.countryCode
         guard let rule = regionRules[country] else {
             return ApplyResult(locale: nil, rule: nil, error: "No regional rule for country \(country); system not changed")
         }
 
         var errors: [String] = []
-        guard backupSystemPreferencesIfNeeded(errors: &errors) else {
-            return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
-        }
 
-        let timeZoneResult = applyTimeZoneIfNeeded(info.timezone)
-        if let error = timeZoneResult {
+        if permissions.timeZone {
+            clearRegionSyncRestoreState()
+            guard backupSystemPreferencesIfNeeded(errors: &errors) else {
+                return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
+            }
+
+            if let error = applyTimeZoneIfNeeded(info.timezone) {
+                errors.append(error)
+                return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
+            }
+        } else if let error = restoreOriginalSystemPreferencesIfNeeded() {
             errors.append(error)
-            return ApplyResult(locale: nil, rule: nil, error: errors.joined(separator: "; "))
         }
 
         return ApplyResult(locale: rule.locale, rule: rule, error: errors.isEmpty ? nil : errors.joined(separator: "; "))

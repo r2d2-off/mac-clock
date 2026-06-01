@@ -5,6 +5,19 @@ on GitHub Releases.
 
 ## Unreleased
 
+## v0.1.37 - 2026-06-02
+
+- Changed first-launch behavior to observe-only: IP Time now checks and shows
+  the external IP region without changing macOS settings until the user enables
+  explicit permissions.
+- Replaced the single Automatic Region Sync toggle with `Settings -> Allowed
+  Changes` permissions for system timezone, locale, measurement units,
+  temperature unit, and first weekday.
+- Restores a disabled permission from the saved baseline when a baseline exists,
+  then stops applying future changes for that setting.
+- Shows only the detected country flag and IP address in the menu bar while no
+  regional changes are allowed.
+
 ## v0.1.36 - 2026-06-02
 
 - Moved menu-bar regional preference synchronization off the main thread onto a

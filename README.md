@@ -1,19 +1,26 @@
 # IP Time
 
-macOS menu bar clock for VPN work:
+macOS menu bar IP/VPN clock:
 <img width="1700" height="194" alt="image" src="https://github.com/user-attachments/assets/42be8623-ecde-4c64-9c6a-a45c635ccb9a" />
 
+On first launch IP Time is observe-only: it checks the external IP and shows the
+detected country flag plus IP address, but it does not change the macOS
+timezone, locale, measurement units, temperature unit, or first weekday. Use
+`Settings -> Allowed Changes` to explicitly enable only the settings IP Time is
+allowed to manage.
 
-The first segment is the configurable home/team clock. It defaults to Moscow
-time (`Europe/Moscow`) and can be changed to a preset city timezone or a fixed
-UTC offset under `Settings -> Home Clock`. The second segment is the current
-system time after the VPN-region timezone is applied. A root
-LaunchDaemon checks the external IP region every 10 minutes, and also rechecks
-shortly after macOS reports a network, Wi-Fi, route, or DNS change. As a
-fallback, it compares the current network fingerprint every 5 seconds and
+When any allowed change is enabled, the menu bar expands to two segments. The
+first segment is the configurable home/team clock. It defaults to Moscow time
+(`Europe/Moscow`) and can be changed to a preset city timezone or a fixed UTC
+offset under `Settings -> Home Clock`. The second segment is the current system
+time and detected IP region.
+
+A root LaunchDaemon checks the external IP region every 10 minutes, and also
+rechecks shortly after macOS reports a network, Wi-Fi, route, or DNS change. As
+a fallback, it compares the current network fingerprint every 5 seconds and
 rechecks when route, DNS, interface, assigned IPv4, or router state changes. It
-updates the system timezone and safe user regional preferences, then writes
-status for the menu bar app.
+writes status for the menu bar app. It changes the system timezone only when
+`Allowed Changes -> System Time Zone` is enabled.
 
 External IP, country, and timezone are checked via `ip-api.com`.
 
@@ -76,8 +83,9 @@ xcode-select --install
 ```
 
 `install.sh` asks for the admin password once. After that, the LaunchDaemon runs
-as root, timezone changes do not prompt again, and the menu bar app starts
-automatically at login.
+as root, permitted timezone changes do not prompt again, and the menu bar app
+starts automatically at login. Installation does not enable any regional
+changes by default.
 
 ## Install From A DMG
 
@@ -202,10 +210,10 @@ or format characters.
 
 Supported VPN regional mappings:
 
-These mappings are used by the root daemon when the current external IP country
-is recognized. The root daemon controls the macOS system timezone. The
-per-user menu bar LaunchAgent applies safe user regional preferences for the
-active user.
+These mappings are used when the current external IP country is recognized. The
+root daemon applies only the system timezone permission. The per-user menu bar
+LaunchAgent applies only the enabled active-user regional preference
+permissions.
 
 ```text
 PL -> Europe/Warsaw      -> pl_PL  -> metric, Celsius, Monday
@@ -219,7 +227,18 @@ SG -> Asia/Singapore     -> en_SG  -> metric, Celsius, Monday
 CN -> Asia/Shanghai      -> zh_CN  -> metric, Celsius, Monday
 ```
 
-The menu bar LaunchAgent changes these active-user preferences automatically:
+`Settings -> Allowed Changes` controls each managed setting independently:
+
+```text
+System Time Zone  -> macOS system timezone, applied by the root daemon
+Locale            -> AppleLocale, applied by the menu bar LaunchAgent
+Measurement Units -> AppleMetricUnits and AppleMeasurementUnits
+Temperature Unit  -> AppleTemperatureUnit
+First Weekday     -> AppleFirstWeekday
+```
+
+The menu bar LaunchAgent can change these active-user preferences when the
+matching permission is enabled:
 
 ```text
 AppleLocale
@@ -229,11 +248,12 @@ AppleTemperatureUnit
 AppleFirstWeekday
 ```
 
-Before the first regional change, the root daemon stores the original system
-timezone once, and the menu bar LaunchAgent stores the original active-user
-regional preferences once. Turning off `Settings -> Automatic Region Sync`
-restores those saved values once and stops future regional changes. Uninstall
-runs the same restore scripts before removing files.
+Before the first allowed regional change, the root daemon stores the original
+system timezone once, and the menu bar LaunchAgent stores the original
+active-user regional preferences once. Disabling an allowed change restores that
+setting from the saved baseline when a baseline exists, then stops future
+changes for that setting. Uninstall runs the same restore scripts before
+removing files.
 
 App language is intentionally kept English-only. The app, daemon, and installer
 do not change `AppleLanguages`. Set it manually if needed:

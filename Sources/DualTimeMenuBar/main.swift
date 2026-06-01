@@ -175,12 +175,120 @@ private struct RegionCheckState: Codable {
 private struct IPTimeConfig: Codable {
     let regionCheckIntervalSeconds: Int
     let homeClock: HomeClockConfig?
-    let regionSyncEnabled: Bool?
+    let regionalPermissions: RegionalPermissions?
 
-    init(regionCheckIntervalSeconds: Int, homeClock: HomeClockConfig?, regionSyncEnabled: Bool? = true) {
+    init(regionCheckIntervalSeconds: Int, homeClock: HomeClockConfig?, regionalPermissions: RegionalPermissions = .none) {
         self.regionCheckIntervalSeconds = regionCheckIntervalSeconds
         self.homeClock = homeClock
-        self.regionSyncEnabled = regionSyncEnabled
+        self.regionalPermissions = regionalPermissions
+    }
+}
+
+private struct RegionalPermissions: Codable, Equatable {
+    let timeZone: Bool
+    let locale: Bool
+    let measurementUnits: Bool
+    let temperatureUnit: Bool
+    let firstWeekday: Bool
+
+    static let none = RegionalPermissions(
+        timeZone: false,
+        locale: false,
+        measurementUnits: false,
+        temperatureUnit: false,
+        firstWeekday: false
+    )
+
+    var anyEnabled: Bool {
+        timeZone || userPreferencesEnabled
+    }
+
+    var userPreferencesEnabled: Bool {
+        locale || measurementUnits || temperatureUnit || firstWeekday
+    }
+
+    init(
+        timeZone: Bool = false,
+        locale: Bool = false,
+        measurementUnits: Bool = false,
+        temperatureUnit: Bool = false,
+        firstWeekday: Bool = false
+    ) {
+        self.timeZone = timeZone
+        self.locale = locale
+        self.measurementUnits = measurementUnits
+        self.temperatureUnit = temperatureUnit
+        self.firstWeekday = firstWeekday
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timeZone
+        case locale
+        case measurementUnits
+        case temperatureUnit
+        case firstWeekday
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timeZone = try container.decodeIfPresent(Bool.self, forKey: .timeZone) ?? false
+        locale = try container.decodeIfPresent(Bool.self, forKey: .locale) ?? false
+        measurementUnits = try container.decodeIfPresent(Bool.self, forKey: .measurementUnits) ?? false
+        temperatureUnit = try container.decodeIfPresent(Bool.self, forKey: .temperatureUnit) ?? false
+        firstWeekday = try container.decodeIfPresent(Bool.self, forKey: .firstWeekday) ?? false
+    }
+
+    func setting(_ key: RegionalPermissionKey, to value: Bool) -> RegionalPermissions {
+        switch key {
+        case .timeZone:
+            return RegionalPermissions(timeZone: value, locale: locale, measurementUnits: measurementUnits, temperatureUnit: temperatureUnit, firstWeekday: firstWeekday)
+        case .locale:
+            return RegionalPermissions(timeZone: timeZone, locale: value, measurementUnits: measurementUnits, temperatureUnit: temperatureUnit, firstWeekday: firstWeekday)
+        case .measurementUnits:
+            return RegionalPermissions(timeZone: timeZone, locale: locale, measurementUnits: value, temperatureUnit: temperatureUnit, firstWeekday: firstWeekday)
+        case .temperatureUnit:
+            return RegionalPermissions(timeZone: timeZone, locale: locale, measurementUnits: measurementUnits, temperatureUnit: value, firstWeekday: firstWeekday)
+        case .firstWeekday:
+            return RegionalPermissions(timeZone: timeZone, locale: locale, measurementUnits: measurementUnits, temperatureUnit: temperatureUnit, firstWeekday: value)
+        }
+    }
+
+    func isEnabled(_ key: RegionalPermissionKey) -> Bool {
+        switch key {
+        case .timeZone:
+            return timeZone
+        case .locale:
+            return locale
+        case .measurementUnits:
+            return measurementUnits
+        case .temperatureUnit:
+            return temperatureUnit
+        case .firstWeekday:
+            return firstWeekday
+        }
+    }
+}
+
+private enum RegionalPermissionKey: String, CaseIterable {
+    case timeZone
+    case locale
+    case measurementUnits
+    case temperatureUnit
+    case firstWeekday
+
+    var menuTitle: String {
+        switch self {
+        case .timeZone:
+            return "System Time Zone"
+        case .locale:
+            return "Locale"
+        case .measurementUnits:
+            return "Measurement Units"
+        case .temperatureUnit:
+            return "Temperature Unit"
+        case .firstWeekday:
+            return "First Weekday"
+        }
     }
 }
 
@@ -188,14 +296,14 @@ private struct RegionSyncRestoreState: Encodable {
     let restoredAt: String
 }
 
-private struct UserPreferenceBackup: Encodable {
+private struct UserPreferenceBackup: Codable {
     let createdAt: String
     let user: String
     let preferences: [String: UserPreferenceBackupValue]
 }
 
-private struct UserPreferenceBackupValue: Encodable {
-    enum Kind: String, Encodable {
+private struct UserPreferenceBackupValue: Codable {
+    enum Kind: String, Codable {
         case missing
         case string
         case bool
@@ -238,6 +346,7 @@ private enum UserDefaultExpectedValue {
 
 private struct UserRegionalPreferences {
     let signature: String
+    let permissions: RegionalPermissions
     let locale: String
     let metricUnits: Bool
     let measurementUnits: String
@@ -467,8 +576,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return statusReadError
     }
 
-    private var regionSyncEnabled: Bool {
-        config.regionSyncEnabled ?? true
+    private var regionalChangesAllowed: Bool {
+        regionalPermissions.anyEnabled
+    }
+
+    private var regionalPermissions: RegionalPermissions {
+        config.regionalPermissions ?? .none
     }
 
     private var hasIPLookupError: Bool {
@@ -530,17 +643,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
     }
 
-    @objc private func toggleRegionSync(_ sender: NSMenuItem) {
-        let enabled = !regionSyncEnabled
+    @objc private func toggleRegionalPermission(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let permission = RegionalPermissionKey(rawValue: rawValue) else {
+            return
+        }
+
+        let enabled = !regionalPermissions.isEnabled(permission)
+        let permissions = regionalPermissions.setting(permission, to: enabled)
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(config.regionCheckIntervalSeconds),
             homeClock: normalizedHomeClock(config.homeClock),
-            regionSyncEnabled: enabled
+            regionalPermissions: permissions
         )
 
         do {
             try writeConfig()
-            try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
             syncUserRegionalPreferences()
             _ = try requestRegionCheck()
             manualRecheckError = nil
@@ -561,7 +679,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(seconds),
             homeClock: normalizedHomeClock(config.homeClock),
-            regionSyncEnabled: regionSyncEnabled
+            regionalPermissions: regionalPermissions
         )
         do {
             try writeConfig()
@@ -582,7 +700,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(config.regionCheckIntervalSeconds),
             homeClock: normalizedHomeClock(homeClock),
-            regionSyncEnabled: regionSyncEnabled
+            regionalPermissions: regionalPermissions
         )
 
         do {
@@ -694,17 +812,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         config = IPTimeConfig(
             regionCheckIntervalSeconds: normalizedRegionCheckInterval(decoded.regionCheckIntervalSeconds),
             homeClock: normalizedHomeClock(decoded.homeClock),
-            regionSyncEnabled: decoded.regionSyncEnabled ?? true
+            regionalPermissions: decoded.regionalPermissions ?? .none
         )
     }
 
     private func syncUserRegionalPreferences() {
-        guard regionSyncEnabled else {
-            lastAppliedRegionalPreferencesSignature = nil
-            enqueueRegionalPreferencesSync(.restore)
-            return
-        }
-
         guard let status,
               status.error == nil,
               let preferences = regionalPreferences(from: status),
@@ -724,16 +836,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
 
+        let permissions = regionalPermissions
         let signature = [
-            locale,
-            measurementUnits,
-            String(metricUnits),
-            temperatureUnit,
-            String(firstWeekday)
+            permissions.timeZone ? "tz=1" : "tz=0",
+            permissions.locale ? "locale=1" : "locale=0",
+            permissions.measurementUnits ? "units=1" : "units=0",
+            permissions.temperatureUnit ? "temp=1" : "temp=0",
+            permissions.firstWeekday ? "weekday=1" : "weekday=0",
+            permissions.locale ? locale : "",
+            permissions.measurementUnits ? measurementUnits : "",
+            permissions.measurementUnits ? String(metricUnits) : "",
+            permissions.temperatureUnit ? temperatureUnit : "",
+            permissions.firstWeekday ? String(firstWeekday) : ""
         ].joined(separator: "|")
 
         return UserRegionalPreferences(
             signature: signature,
+            permissions: permissions,
             locale: locale,
             metricUnits: metricUnits,
             measurementUnits: measurementUnits,
@@ -1082,10 +1201,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let regionSync = NSMenuItem(title: "Automatic Region Sync", action: #selector(toggleRegionSync(_:)), keyEquivalent: "")
-        regionSync.target = self
-        regionSync.state = regionSyncEnabled ? .on : .off
-        menu.addItem(regionSync)
+        let permissionsMenuItem = NSMenuItem(title: "Allowed Changes", action: nil, keyEquivalent: "")
+        permissionsMenuItem.submenu = regionalPermissionsMenu()
+        menu.addItem(permissionsMenuItem)
 
         menu.addItem(.separator())
 
@@ -1102,6 +1220,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         intervalMenuItem.submenu = intervalMenu
         menu.addItem(intervalMenuItem)
+        return menu
+    }
+
+    private func regionalPermissionsMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        let current = NSMenuItem(title: "Current: \(regionalPermissionsDescription())", action: nil, keyEquivalent: "")
+        current.isEnabled = false
+        menu.addItem(current)
+        menu.addItem(.separator())
+
+        for permission in RegionalPermissionKey.allCases {
+            let item = NSMenuItem(title: permission.menuTitle, action: #selector(toggleRegionalPermission(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = permission.rawValue
+            item.state = regionalPermissions.isEnabled(permission) ? .on : .off
+            menu.addItem(item)
+        }
+
         return menu
     }
 
@@ -1192,7 +1329,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func detailRows() -> [String] {
         var rows: [String] = [
-            regionSyncEnabled ? "Managed by LaunchDaemon every \(intervalLabel(config.regionCheckIntervalSeconds))" : "Region sync: off",
+            "IP check: every \(intervalLabel(config.regionCheckIntervalSeconds))",
+            "Allowed changes: \(regionalPermissionsDescription())",
             "Home clock: \(homeClockDescription())"
         ]
 
@@ -1400,6 +1538,34 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func statusDisplay() -> StatusDisplay {
         let now = Date()
+        if !regionalChangesAllowed {
+            var segment = StatusSegment(
+                flag: flag(for: countryCode),
+                primary: ipLabel,
+                detail: nil,
+                detailFirst: false,
+                isError: displayedError != nil,
+                activity: ipActivityIndicator
+            )
+
+            if hasIPLookupError {
+                segment = StatusSegment(
+                    flag: "",
+                    primary: "[ ip-api.com error ]",
+                    detail: nil,
+                    detailFirst: false,
+                    isError: true,
+                    activity: ipActivityIndicator
+                )
+            }
+
+            if case .requested(let version) = updateState {
+                segment = StatusSegment(flag: "⬆", primary: "Updating", detail: version, detailFirst: false, isError: false)
+            }
+
+            return StatusDisplay(segments: [segment], summary: segment.summary)
+        }
+
         let homeClock = resolvedHomeClock()
         let localText = formattedTime(now, in: .autoupdatingCurrent)
         let homeText = formattedTime(now, in: homeClock.timeZone)
@@ -1409,14 +1575,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             StatusSegment(
                 flag: flag(for: countryCode),
                 primary: localText,
-                detail: regionSyncEnabled ? ipLabel : "sync off",
+                detail: ipLabel,
                 detailFirst: false,
-                isError: regionSyncEnabled && displayedError != nil,
+                isError: displayedError != nil,
                 activity: ipActivityIndicator
             )
         ]
 
-        if regionSyncEnabled && hasIPLookupError {
+        if hasIPLookupError {
             segments[1] = StatusSegment(
                 flag: "",
                 primary: "[ ip-api.com error ]",
@@ -1543,6 +1709,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let countryFlag = homeClock.countryCode.map(flag(for:)) ?? ""
         let identifier = homeClock.timeZoneIdentifier ?? "Europe/Moscow"
         return [countryFlag, homeClock.label].filter { !$0.isEmpty }.joined(separator: " ") + " (\(identifier))"
+    }
+
+    private func regionalPermissionsDescription() -> String {
+        let enabled = RegionalPermissionKey.allCases.filter { regionalPermissions.isEnabled($0) }
+        if enabled.isEmpty {
+            return "None"
+        }
+
+        return enabled.map(\.menuTitle).joined(separator: ", ")
     }
 
     private var isManualRecheckInProgress: Bool {
@@ -1763,12 +1938,14 @@ private func performUserRegionalPreferencesSync(_ request: UserRegionalPreferenc
     do {
         switch request {
         case .apply(let preferences):
-            try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
-            try backupUserPreferencesIfNeeded()
-            try applyUserRegionalPreferences(preferences)
+            if preferences.permissions.userPreferencesEnabled {
+                try? FileManager.default.removeItem(at: regionSyncRestoreStateURL)
+                try backupUserPreferencesIfNeeded()
+            }
+            try syncUserRegionalPreferences(preferences)
             return .applied(preferences.signature)
         case .restore:
-            return try restoreOriginalUserPreferencesIfNeeded()
+            return try restoreOriginalUserPreferences(keys: userPreferenceKeysToBackup)
         }
     } catch {
         return .failed("Failed to apply user regional preferences: \(error.localizedDescription)")
@@ -1800,37 +1977,56 @@ private func backupUserPreferencesIfNeeded() throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: userPreferenceRestoreScriptURL.path)
 }
 
-private func applyUserRegionalPreferences(_ preferences: UserRegionalPreferences) throws {
-    try writeUserDefaultIfNeeded(
-        readArguments: ["read", "NSGlobalDomain", "AppleLocale"],
-        writeArguments: ["write", "NSGlobalDomain", "AppleLocale", "-string", preferences.locale],
-        expected: .string(preferences.locale),
-        label: "AppleLocale"
-    )
-    try writeUserDefaultIfNeeded(
-        readArguments: ["read", "NSGlobalDomain", "AppleMetricUnits"],
-        writeArguments: ["write", "NSGlobalDomain", "AppleMetricUnits", "-bool", preferences.metricUnits ? "true" : "false"],
-        expected: .bool(preferences.metricUnits),
-        label: "AppleMetricUnits"
-    )
-    try writeUserDefaultIfNeeded(
-        readArguments: ["read", "NSGlobalDomain", "AppleMeasurementUnits"],
-        writeArguments: ["write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", preferences.measurementUnits],
-        expected: .string(preferences.measurementUnits),
-        label: "AppleMeasurementUnits"
-    )
-    try writeUserDefaultIfNeeded(
-        readArguments: ["read", "NSGlobalDomain", "AppleTemperatureUnit"],
-        writeArguments: ["write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", preferences.temperatureUnit],
-        expected: .string(preferences.temperatureUnit),
-        label: "AppleTemperatureUnit"
-    )
-    try writeUserDefaultIfNeeded(
-        readArguments: ["read", "NSGlobalDomain", "AppleFirstWeekday"],
-        writeArguments: ["write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(preferences.firstWeekday)],
-        expected: .int(preferences.firstWeekday),
-        label: "AppleFirstWeekday"
-    )
+private func syncUserRegionalPreferences(_ preferences: UserRegionalPreferences) throws {
+    if preferences.permissions.locale {
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleLocale"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleLocale", "-string", preferences.locale],
+            expected: .string(preferences.locale),
+            label: "AppleLocale"
+        )
+    } else {
+        try restoreOriginalUserPreferences(keys: ["AppleLocale"])
+    }
+
+    if preferences.permissions.measurementUnits {
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleMetricUnits"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleMetricUnits", "-bool", preferences.metricUnits ? "true" : "false"],
+            expected: .bool(preferences.metricUnits),
+            label: "AppleMetricUnits"
+        )
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleMeasurementUnits"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", preferences.measurementUnits],
+            expected: .string(preferences.measurementUnits),
+            label: "AppleMeasurementUnits"
+        )
+    } else {
+        try restoreOriginalUserPreferences(keys: ["AppleMetricUnits", "AppleMeasurementUnits"])
+    }
+
+    if preferences.permissions.temperatureUnit {
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleTemperatureUnit"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", preferences.temperatureUnit],
+            expected: .string(preferences.temperatureUnit),
+            label: "AppleTemperatureUnit"
+        )
+    } else {
+        try restoreOriginalUserPreferences(keys: ["AppleTemperatureUnit"])
+    }
+
+    if preferences.permissions.firstWeekday {
+        try writeUserDefaultIfNeeded(
+            readArguments: ["read", "NSGlobalDomain", "AppleFirstWeekday"],
+            writeArguments: ["write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(preferences.firstWeekday)],
+            expected: .int(preferences.firstWeekday),
+            label: "AppleFirstWeekday"
+        )
+    } else {
+        try restoreOriginalUserPreferences(keys: ["AppleFirstWeekday"])
+    }
 }
 
 private func writeUserDefaultIfNeeded(
@@ -1850,25 +2046,60 @@ private func writeUserDefaultIfNeeded(
     }
 }
 
-private func restoreOriginalUserPreferencesIfNeeded() throws -> UserRegionalPreferencesSyncResult {
-    if FileManager.default.fileExists(atPath: regionSyncRestoreStateURL.path) {
+@discardableResult
+private func restoreOriginalUserPreferences(keys: [String]) throws -> UserRegionalPreferencesSyncResult {
+    guard FileManager.default.fileExists(atPath: userPreferenceBackupURL.path) else {
         return .skipped
     }
 
-    if FileManager.default.fileExists(atPath: userPreferenceRestoreScriptURL.path) {
-        let result = runProcess(path: "/bin/sh", arguments: [userPreferenceRestoreScriptURL.path])
-        if !result.success {
-            return .failed("Failed to restore user preferences: \(result.message)")
+    let data = try Data(contentsOf: userPreferenceBackupURL)
+    let backup = try JSONDecoder().decode(UserPreferenceBackup.self, from: data)
+
+    for key in keys {
+        guard let value = backup.preferences[key] else {
+            continue
         }
+
+        try restoreUserDefault(key: key, value: value)
     }
 
-    do {
-        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
-        try writeJSON(RegionSyncRestoreState(restoredAt: timestamp()), to: regionSyncRestoreStateURL)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: regionSyncRestoreStateURL.path)
-        return .restored
-    } catch {
-        return .failed("Failed to record user restore state: \(error.localizedDescription)")
+    try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+    try writeJSON(RegionSyncRestoreState(restoredAt: timestamp()), to: regionSyncRestoreStateURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: regionSyncRestoreStateURL.path)
+    return .restored
+}
+
+private func restoreUserDefault(key: String, value: UserPreferenceBackupValue) throws {
+    let arguments: [String]
+
+    switch value.kind {
+    case .missing:
+        arguments = ["delete", "NSGlobalDomain", key]
+    case .string:
+        guard let stringValue = value.stringValue else {
+            return
+        }
+        arguments = ["write", "NSGlobalDomain", key, "-string", stringValue]
+    case .bool:
+        guard let boolValue = value.boolValue else {
+            return
+        }
+        arguments = ["write", "NSGlobalDomain", key, "-bool", boolValue ? "true" : "false"]
+    case .int:
+        guard let intValue = value.intValue else {
+            return
+        }
+        arguments = ["write", "NSGlobalDomain", key, "-int", String(intValue)]
+    case .stringArray:
+        guard let stringArrayValue = value.stringArrayValue else {
+            return
+        }
+        arguments = ["write", "NSGlobalDomain", key, "-array"] + stringArrayValue
+    }
+
+    let result = runProcess(path: "/usr/bin/defaults", arguments: arguments)
+    if !result.success && value.kind != .missing {
+        throw IPTimeMenuError("failed to restore \(key): \(result.message)")
     }
 }
 

@@ -3,6 +3,16 @@
 All notable IP Time changes are recorded here. Release artifacts are published
 on GitHub Releases.
 
+## v0.1.25 - 2026-06-01
+
+- Added `Recheck IP Now` to the menu for immediate manual VPN/IP region checks.
+- Added a `Settings -> IP Check Interval` submenu with 1, 5, 10, 15, 30, and
+  60 minute interval choices.
+- Added `config.json` for user-controlled region check interval settings.
+- Added `recheck-request.json` as the menu bar app to root daemon control file
+  for manual rechecks.
+- The root daemon now reads interval changes live without restarting.
+
 ## v0.1.24 - 2026-06-01
 
 - Fixed rapid Wi-Fi switching after a network-triggered region check.

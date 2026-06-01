@@ -12,10 +12,14 @@ private let userSupportURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/IPTime", isDirectory: true)
 private let updateRequestURL = userSupportURL.appendingPathComponent("update-request.json")
 private let updateResultURL = userSupportURL.appendingPathComponent("update-result.json")
+private let recheckRequestURL = userSupportURL.appendingPathComponent("recheck-request.json")
+private let configURL = userSupportURL.appendingPathComponent("config.json")
 private let moscowTimeZone = TimeZone(identifier: "Europe/Moscow")!
 private let launchAgentLabel = "local.iptime.menubar"
 private let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
+private let defaultRegionCheckIntervalSeconds = 600
+private let regionCheckIntervalOptions = [60, 300, 600, 900, 1_800, 3_600]
 
 private struct StatusSegment {
     let flag: String
@@ -98,6 +102,14 @@ private struct UpdateResult: Codable {
     let message: String
 }
 
+private struct RecheckRequest: Codable {
+    let requestedAt: String
+}
+
+private struct IPTimeConfig: Codable {
+    let regionCheckIntervalSeconds: Int
+}
+
 private enum UpdateState {
     case idle
     case checking
@@ -124,6 +136,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: IPTimeStatus?
     private var statusReadError: String?
     private var lastStatusRead = Date.distantPast
+    private var config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds)
+    private var manualRecheckRequestedAt: Date?
+    private var manualRecheckError: String?
     private var updateState: UpdateState = .idle
     private var lastUpdateCheck = Date.distantPast
     private var updateCheckInFlight = false
@@ -156,6 +171,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         ensureLaunchAgent()
+        loadConfig()
 
         let statusView = StatusBarView()
         statusView.toolTip = "IP time / Moscow time"
@@ -279,6 +295,38 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(settingsURL)
     }
 
+    @objc private func recheckIPNow() {
+        do {
+            try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+            let request = RecheckRequest(requestedAt: timestamp())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(request).write(to: recheckRequestURL, options: .atomic)
+            manualRecheckRequestedAt = Date()
+            manualRecheckError = nil
+        } catch {
+            manualRecheckError = "Failed to request IP recheck: \(error.localizedDescription)"
+        }
+
+        buildMenu()
+    }
+
+    @objc private func setRegionCheckInterval(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Int else {
+            return
+        }
+
+        config = IPTimeConfig(regionCheckIntervalSeconds: normalizedRegionCheckInterval(seconds))
+        do {
+            try writeConfig()
+            manualRecheckError = nil
+        } catch {
+            manualRecheckError = "Failed to save settings: \(error.localizedDescription)"
+        }
+
+        buildMenu()
+    }
+
     @objc private func checkForUpdatesFromMenu() {
         Task { [weak self] in
             guard let self else {
@@ -348,10 +396,43 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             let data = try Data(contentsOf: statusURL)
             status = try JSONDecoder().decode(IPTimeStatus.self, from: data)
             statusReadError = nil
+            clearManualRecheckIfCompleted()
         } catch {
             status = nil
             statusReadError = "No daemon status yet: \(error.localizedDescription)"
         }
+    }
+
+    private func loadConfig() {
+        guard let data = try? Data(contentsOf: configURL),
+              let decoded = try? JSONDecoder().decode(IPTimeConfig.self, from: data) else {
+            config = IPTimeConfig(regionCheckIntervalSeconds: defaultRegionCheckIntervalSeconds)
+            return
+        }
+
+        config = IPTimeConfig(regionCheckIntervalSeconds: normalizedRegionCheckInterval(decoded.regionCheckIntervalSeconds))
+    }
+
+    private func writeConfig() throws {
+        try FileManager.default.createDirectory(at: userSupportURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(config).write(to: configURL, options: .atomic)
+    }
+
+    private func normalizedRegionCheckInterval(_ seconds: Int) -> Int {
+        regionCheckIntervalOptions.contains(seconds) ? seconds : defaultRegionCheckIntervalSeconds
+    }
+
+    private func clearManualRecheckIfCompleted() {
+        guard let manualRecheckRequestedAt,
+              let generatedAt = nonEmpty(status?.generatedAt),
+              let statusDate = ISO8601DateFormatter().date(from: generatedAt),
+              statusDate >= manualRecheckRequestedAt else {
+            return
+        }
+
+        self.manualRecheckRequestedAt = nil
     }
 
     private func loadPendingUpdateState() {
@@ -507,6 +588,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildMenu() {
+        loadConfig()
+
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -532,6 +615,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             menu.addItem(item)
         }
+
+        menu.addItem(.separator())
+
+        let recheck = NSMenuItem(title: "Recheck IP Now", action: #selector(recheckIPNow), keyEquivalent: "")
+        recheck.target = self
+        menu.addItem(recheck)
+
+        let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settings.submenu = settingsMenu()
+        menu.addItem(settings)
 
         menu.addItem(.separator())
 
@@ -562,6 +655,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
 
         statusItem.menu = menu
+    }
+
+    private func settingsMenu() -> NSMenu {
+        let menu = NSMenu()
+        let intervalMenuItem = NSMenuItem(title: "IP Check Interval", action: nil, keyEquivalent: "")
+        let intervalMenu = NSMenu()
+
+        for seconds in regionCheckIntervalOptions {
+            let item = NSMenuItem(title: intervalLabel(seconds), action: #selector(setRegionCheckInterval(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = seconds
+            item.state = config.regionCheckIntervalSeconds == seconds ? .on : .off
+            intervalMenu.addItem(item)
+        }
+
+        intervalMenuItem.submenu = intervalMenu
+        menu.addItem(intervalMenuItem)
+        return menu
     }
 
     private func updateMenuItems() -> [NSMenuItem] {
@@ -601,7 +712,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func detailRows() -> [String] {
-        var rows: [String] = ["Managed by LaunchDaemon every 10 minutes"]
+        var rows: [String] = ["Managed by LaunchDaemon every \(intervalLabel(config.regionCheckIntervalSeconds))"]
 
         if let ip = nonEmpty(status?.ip) {
             rows.append("External IP: \(ip)")
@@ -646,6 +757,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let generatedAt = nonEmpty(status?.generatedAt) {
             rows.append("Last check: \(generatedAt)")
+        }
+
+        if let manualRecheckRequestedAt {
+            rows.append("Manual recheck: requested at \(shortTime(manualRecheckRequestedAt))")
+        }
+
+        if let manualRecheckError {
+            rows.append("Manual recheck: \(manualRecheckError)")
         }
 
         rows.append("App language: English only")
@@ -819,6 +938,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         timeFormatter.timeZone = timeZone
         timeFormatter.dateFormat = store.bool(forKey: DefaultsKey.use24Hour) ? "HH:mm" : "h:mm a"
         return timeFormatter.string(from: date)
+    }
+
+    private func shortTime(_ date: Date) -> String {
+        formattedTime(date, in: .autoupdatingCurrent)
+    }
+
+    private func intervalLabel(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        switch minutes {
+        case 1:
+            return "1 minute"
+        case 60:
+            return "1 hour"
+        default:
+            return "\(minutes) minutes"
+        }
     }
 
     private func nonEmpty(_ value: String?) -> String? {

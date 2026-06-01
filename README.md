@@ -19,6 +19,11 @@ Network-triggered checks are debounced for 5 seconds and run at most once every
 10 seconds. If another network change happens inside that window, the daemon
 delays the recheck instead of dropping it.
 
+Use `Recheck IP Now` from the menu to force an immediate check after connecting
+a VPN manually. Use `Settings -> IP Check Interval` to choose the regular
+background interval: 1, 5, 10, 15, 30, or 60 minutes. The daemon reads interval
+changes live.
+
 If something fails, the VPN/IP segment turns red and the error is shown in the
 menu.
 
@@ -140,6 +145,8 @@ daemon binary so future self-updates can restart cleanly.
 /Library/LaunchDaemons/local.iptime.daemon.plist
 /Library/Application Support/IPTime/status.json
 ~/Library/LaunchAgents/local.iptime.menubar.plist
+~/Library/Application Support/IPTime/config.json
+~/Library/Application Support/IPTime/recheck-request.json
 ~/Library/Application Support/IPTime/update-request.json
 ~/Library/Application Support/IPTime/update-result.json
 ```

@@ -7,7 +7,8 @@ private let statusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment
 private let supportDirectoryURL = statusURL.deletingLastPathComponent()
 private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
 private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
-private let regionCheckInterval: TimeInterval = 600
+private let defaultRegionCheckInterval: TimeInterval = 600
+private let supportedRegionCheckIntervals = Set([60, 300, 600, 900, 1_800, 3_600])
 private let networkFingerprintPollInterval: TimeInterval = 5
 private let networkChangeDebounceInterval: TimeInterval = 5
 private let networkChangeMinimumCheckInterval: TimeInterval = 10
@@ -111,6 +112,14 @@ private struct UpdateResult: Encodable {
     let version: String
     let status: String
     let message: String
+}
+
+private struct RecheckRequest: Decodable {
+    let requestedAt: String
+}
+
+private struct IPTimeConfig: Decodable {
+    let regionCheckIntervalSeconds: Int
 }
 
 private final class NetworkChangeMonitor {
@@ -220,10 +229,13 @@ private final class Runner {
         while true {
             let activeUser = findActiveUser()
             let now = Date()
+            let regionCheckInterval = configuredRegionCheckInterval(activeUser: activeUser)
 
             pollNetworkFingerprint(now: now)
 
-            if consumeImmediateRegionCheckRequest(now: now) {
+            if await handleManualRecheckRequest(activeUser: activeUser) {
+                lastRegionCheck = Date()
+            } else if consumeImmediateRegionCheckRequest(now: now) {
                 await runSingleCheck(activeUser: activeUser)
                 lastRegionCheck = Date()
             } else if now.timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
@@ -280,6 +292,36 @@ private final class Runner {
 
         lastNetworkTriggeredRegionCheck = now
         return true
+    }
+
+    private func handleManualRecheckRequest(activeUser: ActiveUser?) async -> Bool {
+        guard let activeUser else {
+            return false
+        }
+
+        let requestURL = recheckRequestURL(for: activeUser)
+        guard FileManager.default.fileExists(atPath: requestURL.path) else {
+            return false
+        }
+
+        if let data = try? Data(contentsOf: requestURL) {
+            _ = try? JSONDecoder().decode(RecheckRequest.self, from: data)
+        }
+
+        try? FileManager.default.removeItem(at: requestURL)
+        await runSingleCheck(activeUser: activeUser)
+        return true
+    }
+
+    private func configuredRegionCheckInterval(activeUser: ActiveUser?) -> TimeInterval {
+        guard let activeUser,
+              let data = try? Data(contentsOf: configURL(for: activeUser)),
+              let config = try? JSONDecoder().decode(IPTimeConfig.self, from: data),
+              supportedRegionCheckIntervals.contains(config.regionCheckIntervalSeconds) else {
+            return defaultRegionCheckInterval
+        }
+
+        return TimeInterval(config.regionCheckIntervalSeconds)
     }
 
     private func runSingleCheck(activeUser: ActiveUser?) async {
@@ -624,6 +666,16 @@ private func updateRequestURL(for user: ActiveUser) -> URL {
 private func updateResultURL(for user: ActiveUser) -> URL {
     URL(fileURLWithPath: user.home, isDirectory: true)
         .appendingPathComponent("Library/Application Support/IPTime/update-result.json")
+}
+
+private func recheckRequestURL(for user: ActiveUser) -> URL {
+    URL(fileURLWithPath: user.home, isDirectory: true)
+        .appendingPathComponent("Library/Application Support/IPTime/recheck-request.json")
+}
+
+private func configURL(for user: ActiveUser) -> URL {
+    URL(fileURLWithPath: user.home, isDirectory: true)
+        .appendingPathComponent("Library/Application Support/IPTime/config.json")
 }
 
 private var updateAssetName: String {

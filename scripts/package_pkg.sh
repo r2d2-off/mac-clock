@@ -17,6 +17,7 @@ PAYLOAD="$PKG_WORK/payload"
 SCRIPTS_DIR="$PKG_WORK/scripts"
 PKG_PATH="$ROOT/.build/IPTime-macos-$ARCH.pkg"
 PLIST_PATH="$PAYLOAD/Library/LaunchDaemons/local.iptime.daemon.plist"
+COMPONENT_PLIST="$PKG_WORK/components.plist"
 
 rm -rf "$PKG_WORK" "$PKG_PATH"
 mkdir -p \
@@ -123,8 +124,30 @@ xattr -cr "$PAYLOAD" >/dev/null 2>&1 || true
 find "$SCRIPTS_DIR" -name '._*' -delete
 xattr -cr "$SCRIPTS_DIR" >/dev/null 2>&1 || true
 
+cat > "$COMPONENT_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+    <dict>
+        <key>RootRelativeBundlePath</key>
+        <string>Applications/IP Time.app</string>
+        <key>BundleIsRelocatable</key>
+        <false/>
+        <key>BundleIsVersionChecked</key>
+        <false/>
+        <key>BundleHasStrictIdentifier</key>
+        <true/>
+        <key>BundleOverwriteAction</key>
+        <string>upgrade</string>
+    </dict>
+</array>
+</plist>
+PLIST
+
 pkgbuild \
     --root "$PAYLOAD" \
+    --component-plist "$COMPONENT_PLIST" \
     --scripts "$SCRIPTS_DIR" \
     --identifier "local.iptime" \
     --version "$VERSION" \

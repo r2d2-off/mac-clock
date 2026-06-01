@@ -1,0 +1,614 @@
+import Foundation
+
+private let ipInfoURL = URL(string: "https://ipinfo.io/json?token=9497053025bca2")!
+private let ipInfoLiteURL = URL(string: "https://api.ipinfo.io/lite/me?token=9497053025bca2")!
+private let defaultStatusPath = "/Library/Application Support/IPTime/status.json"
+private let statusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["IPTIME_STATUS_PATH"] ?? defaultStatusPath)
+private let supportDirectoryURL = statusURL.deletingLastPathComponent()
+private let isDryRun = ProcessInfo.processInfo.environment["IPTIME_DRY_RUN"] == "1"
+private let runOnce = ProcessInfo.processInfo.environment["IPTIME_RUN_ONCE"] == "1"
+private let regionCheckInterval: TimeInterval = 600
+private let updatePollIntervalNanoseconds: UInt64 = 5_000_000_000
+private let githubReleaseDownloadPrefix = "https://github.com/r2d2-off/mac-clock/releases/download/"
+
+private struct IPInfoResponse: Decodable {
+    let ip: String?
+    let city: String?
+    let region: String?
+    let country: String?
+    let timezone: String?
+
+    init(ip: String?, city: String?, region: String?, country: String?, timezone: String?) {
+        self.ip = ip
+        self.city = city
+        self.region = region
+        self.country = country
+        self.timezone = timezone
+    }
+}
+
+private struct IPInfoLiteResponse: Decodable {
+    let ip: String?
+    let countryCode: String?
+    let country: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case ip
+        case countryCode = "country_code"
+        case country
+    }
+}
+
+private struct IPTimeStatus: Encodable {
+    let generatedAt: String
+    let ip: String?
+    let city: String?
+    let region: String?
+    let countryCode: String?
+    let country: String?
+    let timeZone: String?
+    let locale: String?
+    let measurementUnits: String?
+    let metricUnits: Bool?
+    let temperatureUnit: String?
+    let firstWeekday: Int?
+    let activeUser: String?
+    let error: String?
+}
+
+private struct RegionRule {
+    let locale: String
+    let measurementUnits: String
+    let metricUnits: Bool
+    let temperatureUnit: String
+    let firstWeekday: Int
+}
+
+private let regionRules: [String: RegionRule] = [
+    "PL": RegionRule(locale: "pl_PL", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "AE": RegionRule(locale: "en_AE", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "DE": RegionRule(locale: "de_DE", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "NL": RegionRule(locale: "nl_NL", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "FR": RegionRule(locale: "fr_FR", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "US": RegionRule(locale: "en_US", measurementUnits: "Inches", metricUnits: false, temperatureUnit: "Fahrenheit", firstWeekday: 7),
+    "RU": RegionRule(locale: "ru_RU", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "SG": RegionRule(locale: "en_SG", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1),
+    "CN": RegionRule(locale: "zh_CN", measurementUnits: "Centimeters", metricUnits: true, temperatureUnit: "Celsius", firstWeekday: 1)
+]
+
+private let defaultTimeZonesByCountry: [String: String] = [
+    "PL": "Europe/Warsaw",
+    "AE": "Asia/Dubai",
+    "DE": "Europe/Berlin",
+    "NL": "Europe/Amsterdam",
+    "FR": "Europe/Paris",
+    "US": "America/New_York",
+    "RU": "Europe/Moscow",
+    "SG": "Asia/Singapore",
+    "CN": "Asia/Shanghai"
+]
+
+private struct ActiveUser {
+    let name: String
+    let uid: String
+    let home: String
+}
+
+private struct ApplyResult {
+    let locale: String?
+    let rule: RegionRule?
+    let error: String?
+}
+
+private struct UpdateRequest: Decodable {
+    let requestedAt: String
+    let version: String
+    let assetName: String
+    let downloadURL: String
+}
+
+private struct UpdateResult: Encodable {
+    let generatedAt: String
+    let version: String
+    let status: String
+    let message: String
+}
+
+@main
+private enum IPTimeDaemon {
+    static func main() async {
+        let runner = Runner()
+        await runner.run()
+    }
+}
+
+private final class Runner {
+    private var updateInProgress = false
+
+    func run() async {
+        if isDryRun || runOnce {
+            await runSingleCheck(activeUser: findActiveUser())
+            return
+        }
+
+        await runLoop()
+    }
+
+    private func runLoop() async {
+        var lastRegionCheck = Date.distantPast
+
+        while true {
+            let activeUser = findActiveUser()
+
+            if Date().timeIntervalSince(lastRegionCheck) >= regionCheckInterval {
+                await runSingleCheck(activeUser: activeUser)
+                lastRegionCheck = Date()
+            }
+
+            await handleUpdateRequest(activeUser: activeUser)
+            try? await Task.sleep(nanoseconds: updatePollIntervalNanoseconds)
+        }
+    }
+
+    private func runSingleCheck(activeUser: ActiveUser?) async {
+        do {
+            let info = try await fetchIPInfo()
+            let result = apply(info: info, activeUser: activeUser)
+            writeStatus(info: info, activeUser: activeUser, locale: result.locale, rule: result.rule, error: result.error)
+        } catch {
+            writeStatus(info: nil, activeUser: activeUser, locale: nil, rule: nil, error: error.localizedDescription)
+        }
+    }
+
+    private func handleUpdateRequest(activeUser: ActiveUser?) async {
+        guard !updateInProgress, let activeUser else {
+            return
+        }
+
+        let requestURL = updateRequestURL(for: activeUser)
+        guard FileManager.default.fileExists(atPath: requestURL.path) else {
+            return
+        }
+
+        updateInProgress = true
+        defer {
+            updateInProgress = false
+        }
+
+        do {
+            let data = try Data(contentsOf: requestURL)
+            let request = try JSONDecoder().decode(UpdateRequest.self, from: data)
+            try validateUpdateRequest(request)
+            try await installUpdate(request, activeUser: activeUser)
+            try? FileManager.default.removeItem(at: requestURL)
+            writeUpdateResult(
+                activeUser: activeUser,
+                version: request.version,
+                status: "installed",
+                message: "Installed \(request.version)"
+            )
+            exit(0)
+        } catch {
+            try? FileManager.default.removeItem(at: requestURL)
+            writeUpdateResult(
+                activeUser: activeUser,
+                version: "unknown",
+                status: "failed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func validateUpdateRequest(_ request: UpdateRequest) throws {
+        guard request.assetName == updateAssetName else {
+            throw IPTimeError("Unexpected update asset \(request.assetName); expected \(updateAssetName)")
+        }
+
+        guard request.version.range(of: #"^v?[0-9]+(\.[0-9]+)*$"#, options: .regularExpression) != nil else {
+            throw IPTimeError("Invalid update version \(request.version)")
+        }
+
+        guard let url = URL(string: request.downloadURL),
+              url.scheme == "https",
+              url.absoluteString.hasPrefix(githubReleaseDownloadPrefix) else {
+            throw IPTimeError("Update URL is not an IP Time GitHub release asset")
+        }
+    }
+
+    private func installUpdate(_ request: UpdateRequest, activeUser: ActiveUser) async throws {
+        let updatesDirectory = supportDirectoryURL.appendingPathComponent("updates", isDirectory: true)
+        let workDirectory = updatesDirectory.appendingPathComponent("\(safePathComponent(request.version))-\(UUID().uuidString)", isDirectory: true)
+        let archiveURL = workDirectory.appendingPathComponent(request.assetName)
+        let unpackedURL = workDirectory.appendingPathComponent("unpacked", isDirectory: true)
+        let distURL = unpackedURL.appendingPathComponent("IPTime-macos-\(currentArchitecture)", isDirectory: true)
+        let appSourceURL = distURL.appendingPathComponent("IP Time.app", isDirectory: true)
+        let daemonSourceURL = distURL.appendingPathComponent("iptime-daemon")
+        let appDestinationURL = URL(fileURLWithPath: "/Applications/IP Time.app", isDirectory: true)
+        let stagedAppURL = URL(fileURLWithPath: "/Applications/IP Time.app.update", isDirectory: true)
+        let daemonDestinationURL = URL(fileURLWithPath: "/usr/local/libexec/iptime-daemon")
+        let stagedDaemonURL = URL(fileURLWithPath: "/usr/local/libexec/iptime-daemon.update")
+        let plistURL = URL(fileURLWithPath: "/Library/LaunchDaemons/local.iptime.daemon.plist")
+
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workDirectory)
+        }
+
+        try await downloadUpdate(from: request.downloadURL, to: archiveURL, activeUser: activeUser)
+        try FileManager.default.createDirectory(at: unpackedURL, withIntermediateDirectories: true)
+        try runOrThrow(path: "/usr/bin/ditto", arguments: ["-x", "-k", archiveURL.path, unpackedURL.path])
+
+        guard FileManager.default.fileExists(atPath: appSourceURL.path) else {
+            throw IPTimeError("Update archive does not contain IP Time.app")
+        }
+
+        guard FileManager.default.fileExists(atPath: daemonSourceURL.path) else {
+            throw IPTimeError("Update archive does not contain iptime-daemon")
+        }
+
+        _ = runProcess(path: "/usr/bin/killall", arguments: ["DualTimeMenuBar"])
+
+        try FileManager.default.createDirectory(at: URL(fileURLWithPath: "/usr/local/libexec", isDirectory: true), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: stagedAppURL)
+        try runOrThrow(path: "/usr/bin/ditto", arguments: [appSourceURL.path, stagedAppURL.path])
+        try? FileManager.default.removeItem(at: appDestinationURL)
+        try runOrThrow(path: "/bin/mv", arguments: [stagedAppURL.path, appDestinationURL.path])
+        try runOrThrow(path: "/usr/sbin/chown", arguments: ["-R", "root:wheel", appDestinationURL.path])
+
+        try runOrThrow(path: "/usr/bin/install", arguments: ["-o", "root", "-g", "wheel", "-m", "755", daemonSourceURL.path, stagedDaemonURL.path])
+        try runOrThrow(path: "/bin/mv", arguments: ["-f", stagedDaemonURL.path, daemonDestinationURL.path])
+
+        try writeLaunchDaemonPlist(to: plistURL)
+        try runOrThrow(path: "/usr/sbin/chown", arguments: ["root:wheel", plistURL.path])
+        try runOrThrow(path: "/bin/chmod", arguments: ["644", plistURL.path])
+
+        _ = runAsUser(activeUser, arguments: ["open", appDestinationURL.path])
+    }
+
+    private func apply(info: IPInfoResponse, activeUser: ActiveUser?) -> ApplyResult {
+        guard let timeZone = normalized(info.timezone) else {
+            return ApplyResult(locale: nil, rule: nil, error: "ipinfo.io did not return a timezone")
+        }
+
+        guard TimeZone(identifier: timeZone) != nil else {
+            return ApplyResult(locale: nil, rule: nil, error: "Invalid timezone from ipinfo.io: \(timeZone)")
+        }
+
+        let country = normalized(info.country)?.uppercased() ?? "?"
+        let timeZoneResult = applyTimeZoneIfNeeded(timeZone)
+        if let error = timeZoneResult {
+            return ApplyResult(locale: nil, rule: nil, error: error)
+        }
+
+        guard let rule = regionRules[country] else {
+            return ApplyResult(locale: nil, rule: nil, error: "No regional rule for country \(country); timezone applied")
+        }
+
+        guard let activeUser else {
+            return ApplyResult(locale: rule.locale, rule: rule, error: "No active console user; timezone applied but user regional preferences not changed")
+        }
+
+        if isDryRun {
+            return ApplyResult(locale: rule.locale, rule: rule, error: nil)
+        }
+
+        var errors: [String] = []
+        applyUserRegionalPreferences(rule: rule, activeUser: activeUser, errors: &errors)
+
+        return ApplyResult(locale: rule.locale, rule: rule, error: errors.isEmpty ? nil : errors.joined(separator: "; "))
+    }
+
+    private func applyUserRegionalPreferences(rule: RegionRule, activeUser: ActiveUser, errors: inout [String]) {
+        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleLocale", "-string", rule.locale], "AppleLocale", &errors)
+        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleMetricUnits", "-bool", rule.metricUnits ? "true" : "false"], "AppleMetricUnits", &errors)
+        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleMeasurementUnits", "-string", rule.measurementUnits], "AppleMeasurementUnits", &errors)
+        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleTemperatureUnit", "-string", rule.temperatureUnit], "AppleTemperatureUnit", &errors)
+        writeUserDefault(activeUser, ["defaults", "write", "NSGlobalDomain", "AppleFirstWeekday", "-int", String(rule.firstWeekday)], "AppleFirstWeekday", &errors)
+    }
+
+    private func writeUserDefault(_ activeUser: ActiveUser, _ arguments: [String], _ label: String, _ errors: inout [String]) {
+        let result = runAsUser(activeUser, arguments: arguments)
+        if !result.success {
+            errors.append("Failed to set \(label): \(result.message)")
+        }
+    }
+
+    private func applyTimeZoneIfNeeded(_ timeZone: String) -> String? {
+        if TimeZone.autoupdatingCurrent.identifier == timeZone {
+            return nil
+        }
+
+        if isDryRun {
+            return nil
+        }
+
+        let result = runProcess(path: "/usr/sbin/systemsetup", arguments: ["-settimezone", timeZone])
+        return result.success ? nil : "Failed to set timezone: \(result.message)"
+    }
+
+    private func writeStatus(info: IPInfoResponse?, activeUser: ActiveUser?, locale: String?, rule: RegionRule?, error: String?) {
+        let countryCode = normalized(info?.country)?.uppercased()
+        let status = IPTimeStatus(
+            generatedAt: timestamp(),
+            ip: normalized(info?.ip),
+            city: normalized(info?.city),
+            region: normalized(info?.region),
+            countryCode: countryCode,
+            country: countryName(for: countryCode, fallback: normalized(info?.region)),
+            timeZone: normalized(info?.timezone),
+            locale: locale,
+            measurementUnits: rule?.measurementUnits,
+            metricUnits: rule?.metricUnits,
+            temperatureUnit: rule?.temperatureUnit,
+            firstWeekday: rule?.firstWeekday,
+            activeUser: activeUser?.name,
+            error: normalized(error)
+        )
+
+        do {
+            let directory = statusURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(status)
+            try data.write(to: statusURL, options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data("Failed to write status: \(error.localizedDescription)\n".utf8))
+        }
+    }
+}
+
+private func fetchIPInfo() async throws -> IPInfoResponse {
+    do {
+        return try await fetchDecodable(IPInfoResponse.self, from: ipInfoURL)
+    } catch {
+        let fullError = error.localizedDescription
+
+        do {
+            let lite = try await fetchDecodable(IPInfoLiteResponse.self, from: ipInfoLiteURL)
+            let country = lite.countryCode?.uppercased()
+            let timezone = country.flatMap { defaultTimeZonesByCountry[$0] }
+            return IPInfoResponse(ip: lite.ip, city: nil, region: lite.country, country: country, timezone: timezone)
+        } catch {
+            throw IPTimeError("full ipinfo failed: \(fullError); lite fallback failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+private func fetchDecodable<T: Decodable>(_ type: T.Type, from url: URL) async throws -> T {
+    var request = URLRequest(url: url)
+    request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    request.timeoutInterval = 20
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+
+    if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+        throw IPTimeError("ipinfo.io returned HTTP \(httpResponse.statusCode)")
+    }
+
+    return try JSONDecoder().decode(type, from: data)
+}
+
+private func findActiveUser() -> ActiveUser? {
+    let console = runProcess(path: "/usr/bin/stat", arguments: ["-f", "%Su", "/dev/console"])
+    guard console.success else {
+        return nil
+    }
+
+    let name = console.message.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty, name != "root", name != "loginwindow" else {
+        return nil
+    }
+
+    let uidResult = runProcess(path: "/usr/bin/id", arguments: ["-u", name])
+    guard uidResult.success else {
+        return nil
+    }
+
+    let homeResult = runProcess(path: "/usr/bin/dscl", arguments: [".", "-read", "/Users/\(name)", "NFSHomeDirectory"])
+    let home = parseHomeDirectory(homeResult.message) ?? "/Users/\(name)"
+
+    return ActiveUser(
+        name: name,
+        uid: uidResult.message.trimmingCharacters(in: .whitespacesAndNewlines),
+        home: home
+    )
+}
+
+private func parseHomeDirectory(_ dsclOutput: String) -> String? {
+    let prefix = "NFSHomeDirectory:"
+    guard let line = dsclOutput.split(separator: "\n").map(String.init).first(where: { $0.hasPrefix(prefix) }) else {
+        return nil
+    }
+
+    let value = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+}
+
+private func runAsUser(_ user: ActiveUser, arguments: [String]) -> (success: Bool, message: String) {
+    runProcess(
+        path: "/bin/launchctl",
+        arguments: ["asuser", user.uid, "/usr/bin/sudo", "-u", user.name, "/usr/bin/env", "HOME=\(user.home)", "/usr/bin/\(arguments[0])"] + Array(arguments.dropFirst())
+    )
+}
+
+private func updateRequestURL(for user: ActiveUser) -> URL {
+    URL(fileURLWithPath: user.home, isDirectory: true)
+        .appendingPathComponent("Library/Application Support/IPTime/update-request.json")
+}
+
+private func updateResultURL(for user: ActiveUser) -> URL {
+    URL(fileURLWithPath: user.home, isDirectory: true)
+        .appendingPathComponent("Library/Application Support/IPTime/update-result.json")
+}
+
+private var updateAssetName: String {
+    "IPTime-macos-\(currentArchitecture).zip"
+}
+
+private var currentArchitecture: String {
+    #if arch(arm64)
+    return "arm64"
+    #else
+    return "x86_64"
+    #endif
+}
+
+private func downloadUpdate(from urlString: String, to destinationURL: URL, activeUser: ActiveUser) async throws {
+    guard let url = URL(string: urlString) else {
+        throw IPTimeError("Invalid update URL")
+    }
+
+    var request = URLRequest(url: url)
+    request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    request.timeoutInterval = 120
+
+    let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+    if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+        if httpResponse.statusCode == 404 {
+            throw IPTimeError("GitHub update asset not found")
+        }
+
+        throw IPTimeError("GitHub asset download returned HTTP \(httpResponse.statusCode)")
+    }
+
+    try? FileManager.default.removeItem(at: destinationURL)
+    try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+}
+
+private func writeLaunchDaemonPlist(to url: URL) throws {
+    let plist = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>local.iptime.daemon</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>/usr/local/libexec/iptime-daemon</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>KeepAlive</key>
+        <true/>
+        <key>StandardOutPath</key>
+        <string>/Library/Logs/IPTimeDaemon.out.log</string>
+        <key>StandardErrorPath</key>
+        <string>/Library/Logs/IPTimeDaemon.err.log</string>
+    </dict>
+    </plist>
+    """
+
+    try plist.data(using: .utf8)?.write(to: url, options: .atomic)
+}
+
+private func writeUpdateResult(activeUser: ActiveUser, version: String, status: String, message: String) {
+    let resultURL = updateResultURL(for: activeUser)
+    let result = UpdateResult(
+        generatedAt: timestamp(),
+        version: version,
+        status: status,
+        message: message
+    )
+
+    do {
+        try FileManager.default.createDirectory(at: resultURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(result).write(to: resultURL, options: .atomic)
+        _ = runProcess(path: "/usr/sbin/chown", arguments: ["\(activeUser.name)", resultURL.path])
+        _ = runProcess(path: "/bin/chmod", arguments: ["644", resultURL.path])
+    } catch {
+        FileHandle.standardError.write(Data("Failed to write update result: \(error.localizedDescription)\n".utf8))
+    }
+}
+
+private func runOrThrow(path: String, arguments: [String]) throws {
+    let result = runProcess(path: path, arguments: arguments)
+    if !result.success {
+        throw IPTimeError("\(URL(fileURLWithPath: path).lastPathComponent) failed: \(result.message)")
+    }
+}
+
+private func runProcess(path: String, arguments: [String]) -> (success: Bool, message: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
+
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+    } catch {
+        return (false, error.localizedDescription)
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let message = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+    if process.terminationStatus == 0 {
+        return (true, message)
+    }
+
+    return (false, message.isEmpty ? "exit code \(process.terminationStatus)" : message)
+}
+
+private func safePathComponent(_ value: String) -> String {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
+    return String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+}
+
+private func countryName(for code: String?, fallback: String?) -> String? {
+    guard let code else {
+        return fallback
+    }
+
+    switch code {
+    case "PL":
+        return "Poland"
+    case "AE":
+        return "United Arab Emirates"
+    case "DE":
+        return "Germany"
+    case "NL":
+        return "Netherlands"
+    case "FR":
+        return "France"
+    case "US":
+        return "United States"
+    case "RU":
+        return "Russia"
+    default:
+        return fallback
+    }
+}
+
+private func normalized(_ value: String?) -> String? {
+    guard let value else {
+        return nil
+    }
+
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func timestamp() -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    return formatter.string(from: Date())
+}
+
+private struct IPTimeError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? {
+        message
+    }
+}
